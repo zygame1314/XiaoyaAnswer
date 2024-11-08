@@ -35,7 +35,7 @@
 
 - 如有问题，请联系：[zygame1314@gmail.com](mailto:zygame1314@gmail.com)  
 - 主页：[zygame1314.site](https://zygame1314.site)
-- Github：[XiaoyaAnswerHelper](https://github.com/zygame1314/XiaoyaAnswerHelper)
+- Github：[XiaoyaAnswerHelper](https://github.com/zygame1314/XiaoyaAnswer)
 
 ### 🔑 激活码获取
 
