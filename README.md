@@ -34,13 +34,13 @@
 ## 🤔 获取帮助
 
 - 如有问题，请联系：[zygame1314@gmail.com](mailto:zygame1314@gmail.com)  
-- 主页：[zygame1314.site](https://zygame1314.site)
+- 主页：[zygame1314.site](https://blog.zygame1314.site)
 - 脚本页面：[脚本猫](https://scriptcat.org/zh-CN/script-show-page/2773)
 - Github：[XiaoyaAnswerHelper](https://github.com/zygame1314/XiaoyaAnswer)
 
 ### 🔑 激活码获取
 
-本工具需要激活码才能解锁更多功能。请访问[作者主页](https://zygame1314.site)获取免费的激活码——当然，这也只是为了让大家能够高效学习，毕竟大家都是学习型人才。（手动狗头）
+本工具需要激活码才能解锁更多功能。请访问[作者主页](https://blog.zygame1314.site)获取免费的激活码——当然，这也只是为了让大家能够高效学习，毕竟大家都是学习型人才。（手动狗头）
 
 ---
 
