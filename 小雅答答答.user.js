@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         小雅答答答
 // @license      MIT
-// @version      2.9.3
+// @version      2.9.4
 // @description  小雅平台学习助手 📖，智能整理归纳学习资料 📚，辅助完成练习 💪，并提供便捷的查阅和修改功能 📝！
 // @author       Yi
 // @match        https://*.ai-augmented.com/*
@@ -33,6 +33,10 @@
             dispatchEvent: window.dispatchEvent,
             removeItem: Storage.prototype.removeItem,
             register: navigator.serviceWorker.register,
+            fetch: window.fetch,
+            xhrOpen: XMLHttpRequest.prototype.open,
+            xhrSend: XMLHttpRequest.prototype.send,
+            sendBeacon: navigator.sendBeacon ? navigator.sendBeacon.bind(navigator) : null
         },
         _decode: (str) => decodeURIComponent(escape(atob(str))),
         _allowRemovalOnce: false,
@@ -127,6 +131,90 @@
             };
             startObserver();
         },
+        _initNetworkInterceptor: function() {
+            const self = this;
+            const blockedHostname = 'log.aliyuncs.com';
+            window.fetch = function(input, init) {
+                let urlStr;
+                if (typeof input === 'string') {
+                    urlStr = input;
+                } else if (input instanceof Request) {
+                    urlStr = input.url;
+                } else {
+                    urlStr = String(input);
+                }
+                try {
+                    const urlObj = new URL(urlStr, window.location.origin);
+                    if (urlObj.hostname.endsWith(blockedHostname)) {
+                        console.warn(`[运行时] 阻止了向日志服务器的 fetch 请求:`, urlStr);
+                        const fakeResponse = new Response('{"success":true}', {
+                            status: 200,
+                            headers: { 'Content-Type': 'application/json' }
+                        });
+                        return Promise.resolve(fakeResponse);
+                    }
+                } catch (e) {
+                    console.warn('[运行时] 解析 fetch 目标 URL 时发生异常，回退至原生 fetch：', e);
+                    try {
+                        return self._nativeRefs.fetch.apply(window, arguments);
+                    } catch (innerErr) {
+                        console.error('[运行时] 回退原生 fetch 时也发生异常：', innerErr);
+                        return Promise.reject(innerErr);
+                    }
+                }
+                return self._nativeRefs.fetch.apply(window, arguments);
+            };
+            XMLHttpRequest.prototype.open = function(method, url, ...rest) {
+                this._requestURL = url;
+                return self._nativeRefs.xhrOpen.apply(this, arguments);
+            };
+            XMLHttpRequest.prototype.send = function(body) {
+                if (this._requestURL) {
+                    try {
+                        const urlObj = new URL(this._requestURL, window.location.origin);
+                        if (urlObj.hostname.endsWith(blockedHostname)) {
+                            console.warn(`[运行时] 阻止了向日志服务器的 XMLHttpRequest 请求:`, this._requestURL);
+                            Object.defineProperty(this, 'readyState', { value: 4, writable: true });
+                            Object.defineProperty(this, 'status', { value: 200, writable: true });
+                            Object.defineProperty(this, 'responseText', { value: '{"success":true}', writable: true });
+                            Object.defineProperty(this, 'response', { value: '{"success":true}', writable: true });
+                            this.dispatchEvent(new Event('readystatechange'));
+                            this.dispatchEvent(new Event('load'));
+                            return;
+                        }
+                    } catch (e) {
+                        console.error('[运行时] 处理 XMLHttpRequest URL 时发生异常，回退至原始 send：', e);
+                        try {
+                            return self._nativeRefs.xhrSend.apply(this, arguments);
+                        } catch (innerErr) {
+                            console.error('[运行时] 调用原始 XMLHttpRequest.send 也失败：', innerErr);
+                            throw innerErr;
+                        }
+                    }
+                }
+                return self._nativeRefs.xhrSend.apply(this, arguments);
+            };
+            if (self._nativeRefs.sendBeacon) {
+                navigator.sendBeacon = function(url, data) {
+                    try {
+                        const urlObj = new URL(url, window.location.origin);
+                        if (urlObj.hostname.endsWith(blockedHostname)) {
+                            console.warn(`[运行时] 阻止了向日志服务器的 sendBeacon 请求:`, url);
+                            return true;
+                        }
+                    } catch (e) {
+                        console.warn('[运行时] sendBeacon URL 解析失败，回退至原生实现：', e);
+                    }
+                    try {
+                        return self._nativeRefs.sendBeacon.call(navigator, url, data);
+                    } catch (err) {
+                        console.error('[运行时] 调用原生 sendBeacon 失败：', err);
+                        return false;
+                    }
+                };
+            }
+            console.log('[运行时] 网络请求拦截器已部署。');
+        },
         run: function () {
             console.log('[运行时] 正在初始化运行时补丁...');
             this._clearStaleWorkers();
@@ -134,6 +222,7 @@
             this._initSecureStorage();
             this._manageWorkerLifecycle();
             this._setupUIMonitor();
+            this._initNetworkInterceptor();
             console.log('[运行时] 补丁已成功应用。');
         }
     };
@@ -1585,7 +1674,7 @@
                 const escapedKeywords = uniqueKeywords.map(k => k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
                 const regex = new RegExp(`\\b(${escapedKeywords.join('|')})\\b`, 'g');
                 highlightedMessage = message.replace(regex, (match) =>
-                    `<span style="${highlightStyle}"
+                                                     `<span style="${highlightStyle}"
                     onmouseover="this.style.backgroundColor='${highlightColor}15'; this.style.borderBottomColor='${highlightColor}'"
                     onmouseout="this.style.backgroundColor='transparent'; this.style.borderBottomColor='${highlightColor}50'"
                 >${match}</span>`
@@ -2035,22 +2124,22 @@
                         })
                             .then(res => res.json())
                             .then(data => {
-                                setLoadingState(false);
-                                if (data.success) {
-                                    localStorage.setItem('xiaoya_access_token', data.access_token);
-                                    localStorage.setItem('xiaoya_refresh_token', data.refresh_token);
-                                    localStorage.setItem('xiaoya_bound_user_id', userInfo.id.toString());
-                                    showNotification('激活成功！', { type: 'success', animation: 'scale' });
-                                    closeModal();
-                                    getAndStoreAnswers();
-                                } else {
-                                    showNotification(`激活失败: ${data.error}`, { type: 'error' });
-                                }
-                            })
+                            setLoadingState(false);
+                            if (data.success) {
+                                localStorage.setItem('xiaoya_access_token', data.access_token);
+                                localStorage.setItem('xiaoya_refresh_token', data.refresh_token);
+                                localStorage.setItem('xiaoya_bound_user_id', userInfo.id.toString());
+                                showNotification('激活成功！', { type: 'success', animation: 'scale' });
+                                closeModal();
+                                getAndStoreAnswers();
+                            } else {
+                                showNotification(`激活失败: ${data.error}`, { type: 'error' });
+                            }
+                        })
                             .catch(err => {
-                                setLoadingState(false);
-                                showNotification(`网络错误: ${err.message}`, { type: 'error' });
-                            });
+                            setLoadingState(false);
+                            showNotification(`网络错误: ${err.message}`, { type: 'error' });
+                        });
                     });
                 });
             } else {
@@ -2774,8 +2863,8 @@
                             let rawAnswer = detailedQuestionInfo.answer_items[0].answer;
                             let finalAnswerObject = deepParseJsonString(rawAnswer);
                             let finalAnswerString = (typeof finalAnswerObject === 'object')
-                                ? JSON.stringify(finalAnswerObject)
-                                : String(finalAnswerObject);
+                            ? JSON.stringify(finalAnswerObject)
+                            : String(finalAnswerObject);
                             if (!question.answer_items || question.answer_items.length === 0) {
                                 question.answer_items = [{ answer: finalAnswerString }];
                             } else {
@@ -3128,8 +3217,8 @@
             }
             const validTaskTypes = [2, 3, 4, 5];
             const allAssignments = tasksData.student_tasks.filter(task =>
-                validTaskTypes.includes(task.task_type)
-            );
+                                                                  validTaskTypes.includes(task.task_type)
+                                                                 );
             const assignmentsToScan = allAssignments.filter(task => {
                 const lastScanTimestamp = contributedData[groupId.toString()]?.[task.node_id.toString()];
                 if (!lastScanTimestamp) {
@@ -3633,8 +3722,8 @@
                 question.answer_items
                     .filter(item => !item.is_target_opt && item.answer)
                     .forEach(item => {
-                        matchObject[item.id] = item.answer;
-                    });
+                    matchObject[item.id] = item.answer;
+                });
                 if (Object.keys(matchObject).length > 0) {
                     answer = [matchObject];
                 } else {
@@ -4020,1313 +4109,1313 @@
                 border-radius: 4px;
             }
         `;
-        style.textContent += scrollbarStyles;
-        modalContent.classList.add('tutorial-modal');
-        modalContent.appendChild(closeButton);
-        modalContent.appendChild(tutorialContent);
-        modalOverlay.appendChild(modalContent);
-        document.body.appendChild(modalOverlay);
-        setTimeout(() => {
-            modalOverlay.style.opacity = '1';
-        }, 10);
-    }
-    function aliyunEncodeURI(str) {
-        var result = encodeURIComponent(str);
-        result = result.replace(/\+/g, "%20");
-        result = result.replace(/\*/g, "%2A");
-        result = result.replace(/%7E/g, "~");
-        return result;
-    }
-    function makeUTF8sort(params) {
-        var sortedKeys = Object.keys(params).sort();
-        var sortedParams = [];
-        for (var i = 0; i < sortedKeys.length; i++) {
-            var key = sortedKeys[i];
-            if (key && params[key]) {
-                sortedParams.push(aliyunEncodeURI(key) + "=" + aliyunEncodeURI(params[key]));
-            }
-        }
-        return sortedParams.join("&");
-    }
-    function makeChangeSiga(params, accessSecret) {
-        const stringToSign = "GET&%2F&" + aliyunEncodeURI(makeUTF8sort(params));
-        const signature = CryptoJS.HmacSHA1(stringToSign, accessSecret + "&");
-        return signature.toString(CryptoJS.enc.Base64);
-    }
-    const SignatureUtil = {
-        NONCE_STR_MAX: 32,
-        createNonceStr(len = 16) {
-            len = len > this.NONCE_STR_MAX ? this.NONCE_STR_MAX : len;
-            let str = "";
-            const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-            for (let i = 0; i < len; i++) {
-                str += chars[Math.floor(Math.random() * chars.length)];
-            }
-            return str;
-        },
-        createSignature(params) {
-            const message = params.message;
-            const timestamp = params.timestamp || new Date().getTime().toString();
-            const nonce = params.nonce || this.createNonceStr();
-            const elements = [
-                encodeURIComponent(message),
-                timestamp,
-                nonce,
-                "--xy-create-signature--"
-            ];
-            const signature = CryptoJS.SHA1(elements.sort().join("")).toString();
-            return {
-                message: message,
-                signature: signature,
-                timestamp: timestamp,
-                nonce: nonce,
-            };
-        }
-    };
-    async function getAudioUrl(fileId) {
-        try {
-            const token = getToken();
-            if (!token) throw new Error("无法获取Token");
-            const message = JSON.stringify({ file_id: fileId });
-            const signedPayload = SignatureUtil.createSignature({ message });
-            const response = await fetch(`${window.location.origin}/api/jx-oresource/cloud/file/audio`, {
-                method: 'POST',
-                headers: {
-                    'authorization': `Bearer ${token}`,
-                    'content-type': 'application/json; charset=UTF-8'
-                },
-                body: JSON.stringify(signedPayload)
-            });
-            if (!response.ok) {
-                throw new Error(`获取音频URL失败, 状态: ${response.status}`);
-            }
-            const data = await response.json();
-            if (data.success && data.data) {
-                return data.data.audio_transcode_url || data.data.url;
-            } else {
-                throw new Error(data.message || '返回数据格式不正确');
-            }
-        } catch (error) {
-            console.error(`获取音频URL时出错 (File ID: ${fileId}):`, error);
-            return null;
+style.textContent += scrollbarStyles;
+modalContent.classList.add('tutorial-modal');
+modalContent.appendChild(closeButton);
+modalContent.appendChild(tutorialContent);
+modalOverlay.appendChild(modalContent);
+document.body.appendChild(modalOverlay);
+setTimeout(() => {
+    modalOverlay.style.opacity = '1';
+}, 10);
+}
+function aliyunEncodeURI(str) {
+    var result = encodeURIComponent(str);
+    result = result.replace(/\+/g, "%20");
+    result = result.replace(/\*/g, "%2A");
+    result = result.replace(/%7E/g, "~");
+    return result;
+}
+function makeUTF8sort(params) {
+    var sortedKeys = Object.keys(params).sort();
+    var sortedParams = [];
+    for (var i = 0; i < sortedKeys.length; i++) {
+        var key = sortedKeys[i];
+        if (key && params[key]) {
+            sortedParams.push(aliyunEncodeURI(key) + "=" + aliyunEncodeURI(params[key]));
         }
     }
-    function gmFetch(url, onProgress) {
-        return new Promise((resolve, reject) => {
-            GM_xmlhttpRequest({
-                method: 'GET',
-                url: url,
-                responseType: 'arraybuffer',
-                onload: (response) => {
-                    if (response.status >= 200 && response.status < 300) {
-                        if (onProgress) onProgress(1);
-                        resolve(response.response);
-                    } else {
-                        reject(new Error(`gmFetch 请求失败: 状态 ${response.status}`));
-                    }
-                },
-                onerror: (response) => {
-                    reject(new Error(`gmFetch 网络错误: ${response.statusText}`));
-                },
-                onprogress: (event) => {
-                    if (event.lengthComputable && onProgress) {
-                        onProgress(event.loaded / event.total);
-                    }
-                }
-            });
-        });
-    }
-    async function getVideoUrl(videoId) {
-        try {
-            const token = getToken();
-            if (!token) throw new Error("无法获取Token");
-            const authResponse = await fetch(`${window.location.origin}/api/jx-oresource/vod/video/play_auth/${videoId}?is_public=1`, {
-                headers: { 'authorization': `Bearer ${token}` }
-            });
-            if (!authResponse.ok) throw new Error(`获取视频凭证失败, 状态: ${authResponse.status}`);
-            const authData = await authResponse.json();
-            if (!authData.success || !authData.data || !authData.data.play_auth) {
-                throw new Error(authData.message || '返回的播放凭证数据格式不正确');
-            }
-            const playAuthData = JSON.parse(atob(authData.data.play_auth));
-            const s = {
-                vid: playAuthData.VideoMeta.VideoId,
-                accessId: playAuthData.AccessKeyId,
-                accessSecret: playAuthData.AccessKeySecret,
-                stsToken: playAuthData.SecurityToken,
-                domainRegion: playAuthData.Region,
-                authInfo: playAuthData.AuthInfo,
-                format: "mp4",
-                mediaType: "video"
-            };
-            const signatureNonce = crypto.randomUUID();
-            const params = {
-                AccessKeyId: s.accessId,
-                Action: "GetPlayInfo",
-                VideoId: s.vid,
-                Formats: s.format,
-                SecurityToken: s.stsToken,
-                StreamType: s.mediaType,
-                Format: "JSON",
-                Version: "2017-03-21",
-                SignatureMethod: "HMAC-SHA1",
-                SignatureVersion: "1.0",
-                SignatureNonce: signatureNonce,
-                AuthInfo: s.authInfo
-            };
-            const signature = makeChangeSiga(params, s.accessSecret);
-            const queryString = makeUTF8sort(params) + "&Signature=" + aliyunEncodeURI(signature);
-            const finalUrl = `https://vod.${s.domainRegion}.aliyuncs.com/?${queryString}`;
-            const playInfoResponse = await fetch(finalUrl);
-            if (!playInfoResponse.ok) {
-                const errorText = await playInfoResponse.text();
-                console.error('从阿里云获取播放信息失败，原始响应:', errorText);
-                throw new Error(`从阿里云获取播放信息失败, 状态: ${playInfoResponse.status}`);
-            }
-            const playInfoData = await playInfoResponse.json();
-            if (playInfoData && playInfoData.PlayInfoList && playInfoData.PlayInfoList.PlayInfo && playInfoData.PlayInfoList.PlayInfo.length > 0) {
-                const playInfos = playInfoData.PlayInfoList.PlayInfo;
-                const videoInfo = playInfos
-                    .filter(p => p.Format === 'mp4')
-                    .sort((a, b) => (b.Width || 0) - (a.Width || 0))[0];
-                const audioInfo = playInfos.find(p => p.Format === 'm4a');
-                return {
-                    videoUrl: videoInfo ? videoInfo.PlayURL : null,
-                    audioUrl: audioInfo ? audioInfo.PlayURL : null,
-                };
-            } else if (playInfoData.Code) {
-                throw new Error(`阿里云API错误: ${playInfoData.Code} - ${playInfoData.Message}`);
-            } else {
-                throw new Error('播放信息列表中没有可用的地址');
-            }
-        } catch (error) {
-            console.error(`获取视频/音频URL时出错 (Video ID: ${videoId}):`, error);
-            return { videoUrl: null, audioUrl: null };
+    return sortedParams.join("&");
+}
+function makeChangeSiga(params, accessSecret) {
+    const stringToSign = "GET&%2F&" + aliyunEncodeURI(makeUTF8sort(params));
+    const signature = CryptoJS.HmacSHA1(stringToSign, accessSecret + "&");
+    return signature.toString(CryptoJS.enc.Base64);
+}
+const SignatureUtil = {
+    NONCE_STR_MAX: 32,
+    createNonceStr(len = 16) {
+        len = len > this.NONCE_STR_MAX ? this.NONCE_STR_MAX : len;
+        let str = "";
+        const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+        for (let i = 0; i < len; i++) {
+            str += chars[Math.floor(Math.random() * chars.length)];
         }
-    }
-    async function extractAndEncodeAudio(videoUrl, onProgress) {
-        let worker = null;
-        try {
-            if (onProgress) onProgress(0.05, "下载中");
-            const videoData = await gmFetch(videoUrl, (progress) => {
-                if (onProgress) onProgress(0.05 + progress * 0.25, "下载中");
-            });
-            if (onProgress) onProgress(0.3, "解码中");
-            const audioContext = new (window.AudioContext || window.webkitAudioContext)();
-            const audioBuffer = await audioContext.decodeAudioData(videoData);
-            await audioContext.close();
-            if (onProgress) onProgress(0.6, "编码中");
-            return await new Promise((resolve, reject) => {
-                const workerBlob = new Blob([WavEncoderWorker], { type: 'application/javascript' });
-                worker = new Worker(URL.createObjectURL(workerBlob));
-                worker.onmessage = (e) => {
-                    if (onProgress) onProgress(1, "完成");
-                    resolve(e.data);
-                    worker.terminate();
-                };
-                worker.onerror = (e) => {
-                    console.error("WAV 编码 Worker 出错:", e);
-                    reject(new Error(`WAV 编码失败: ${e.message}`));
-                    worker.terminate();
-                };
-                const channels = [];
-                for (let i = 0; i < audioBuffer.numberOfChannels; i++) {
-                    channels.push(audioBuffer.getChannelData(i));
-                }
-                worker.postMessage({
-                    channels: channels,
-                    sampleRate: audioBuffer.sampleRate,
-                    length: audioBuffer.length
-                });
-            });
-        } catch (error) {
-            if (worker) worker.terminate();
-            console.error("从视频提取音频失败:", error);
-            throw error;
-        }
-    }
-    async function callSttApi(audioSource, sttConfig) {
-        const { sttProvider, sttEndpoint, sttApiKey, sttModel, apiKey: llmApiKey } = sttConfig;
-        if (!sttEndpoint) throw new Error("STT API 地址未配置。");
-        const finalApiKey = sttApiKey || llmApiKey;
-        if (!finalApiKey) throw new Error("STT API Key 未配置（也未提供备用的 LLM Key）。");
-        console.log(`[STT] 使用 [${sttProvider}] 提供商开始转录...`);
-        showNotification('🎧 语音转录中...', { type: 'info', duration: 10000 });
-        try {
-            switch (sttProvider) {
-                case 'openai_compatible':
-                    return await callWhisperCompatibleApi(audioSource, sttEndpoint, finalApiKey, sttModel);
-                case 'gemini':
-                    return await callGeminiSttApi(audioSource, sttEndpoint, finalApiKey, sttModel);
-                default:
-                    throw new Error(`未知的 STT 提供商: ${sttProvider}`);
-            }
-        } catch (error) {
-            console.error('[STT] 语音转录失败:', error);
-            showNotification(`语音转录失败: ${error.message}`, { type: 'error', duration: 8000 });
-            throw error;
-        }
-    }
-    async function callWhisperCompatibleApi(audioSource, endpoint, apiKey, model) {
-        let audioBlob;
-        let fileName = 'audio.wav';
-        if (typeof audioSource === 'string') {
-            const audioResponse = await fetch(audioSource);
-            if (!audioResponse.ok) {
-                throw new Error(`下载音频文件失败, 状态: ${audioResponse.status}`);
-            }
-            audioBlob = await audioResponse.blob();
-            fileName = audioSource.split('/').pop().split('?')[0] || 'audio.mp3';
-        } else if (audioSource instanceof Blob) {
-            audioBlob = audioSource;
-        } else {
-            throw new Error('无效的音频源类型');
-        }
-        const formData = new FormData();
-        formData.append('file', audioBlob, fileName);
-        formData.append('model', model || 'whisper-1');
-        const sttApiResponse = await fetch(endpoint, {
-            method: 'POST',
-            headers: { 'Authorization': `Bearer ${apiKey}` },
-            body: formData
-        });
-        if (!sttApiResponse.ok) {
-            const errorText = await sttApiResponse.text();
-            throw new Error(`STT API 请求失败 (${sttApiResponse.status}): ${errorText}`);
-        }
-        const result = await sttApiResponse.json();
-        if (typeof result.text === 'string') {
-            showNotification('🎤 转录完成!', { type: 'success', duration: 2000 });
-            return result.text;
-        } else {
-            throw new Error("STT API 返回的数据格式不正确，未找到 'text' 字段。");
-        }
-    }
-    async function callGeminiSttApi(audioSource, endpoint, apiKey, model) {
-        let audioBlob;
-        let mimeType;
-        if (typeof audioSource === 'string') {
-            const audioResponse = await fetch(audioSource);
-            if (!audioResponse.ok) {
-                throw new Error(`下载音频文件失败, 状态: ${audioResponse.status}`);
-            }
-            audioBlob = await audioResponse.blob();
-            mimeType = audioBlob.type || 'audio/mp3';
-        } else if (audioSource instanceof Blob) {
-            audioBlob = audioSource;
-            mimeType = audioBlob.type;
-        } else {
-            throw new Error('无效的音频源类型');
-        }
-        const base64Audio = await new Promise((resolve, reject) => {
-            const reader = new FileReader();
-            reader.onloadend = () => resolve(reader.result.split(',')[1]);
-            reader.onerror = reject;
-            reader.readAsDataURL(audioBlob);
-        });
-        const requestBody = {
-            contents: [
-                {
-                    parts: [
-                        { text: "Please provide a transcript for this audio." },
-                        {
-                            inlineData: {
-                                mimeType: mimeType,
-                                data: base64Audio,
-                            },
-                        },
-                    ],
-                },
-            ],
+        return str;
+    },
+    createSignature(params) {
+        const message = params.message;
+        const timestamp = params.timestamp || new Date().getTime().toString();
+        const nonce = params.nonce || this.createNonceStr();
+        const elements = [
+            encodeURIComponent(message),
+            timestamp,
+            nonce,
+            "--xy-create-signature--"
+        ];
+        const signature = CryptoJS.SHA1(elements.sort().join("")).toString();
+        return {
+            message: message,
+            signature: signature,
+            timestamp: timestamp,
+            nonce: nonce,
         };
-        let finalEndpoint = endpoint.endsWith('/') ? endpoint : endpoint + '/';
-        finalEndpoint += `${model}:generateContent?key=${apiKey}`;
-        const sttApiResponse = await fetch(finalEndpoint, {
+    }
+};
+async function getAudioUrl(fileId) {
+    try {
+        const token = getToken();
+        if (!token) throw new Error("无法获取Token");
+        const message = JSON.stringify({ file_id: fileId });
+        const signedPayload = SignatureUtil.createSignature({ message });
+        const response = await fetch(`${window.location.origin}/api/jx-oresource/cloud/file/audio`, {
+            method: 'POST',
+            headers: {
+                'authorization': `Bearer ${token}`,
+                'content-type': 'application/json; charset=UTF-8'
+            },
+            body: JSON.stringify(signedPayload)
+        });
+        if (!response.ok) {
+            throw new Error(`获取音频URL失败, 状态: ${response.status}`);
+        }
+        const data = await response.json();
+        if (data.success && data.data) {
+            return data.data.audio_transcode_url || data.data.url;
+        } else {
+            throw new Error(data.message || '返回数据格式不正确');
+        }
+    } catch (error) {
+        console.error(`获取音频URL时出错 (File ID: ${fileId}):`, error);
+        return null;
+    }
+}
+function gmFetch(url, onProgress) {
+    return new Promise((resolve, reject) => {
+        GM_xmlhttpRequest({
+            method: 'GET',
+            url: url,
+            responseType: 'arraybuffer',
+            onload: (response) => {
+                if (response.status >= 200 && response.status < 300) {
+                    if (onProgress) onProgress(1);
+                    resolve(response.response);
+                } else {
+                    reject(new Error(`gmFetch 请求失败: 状态 ${response.status}`));
+                }
+            },
+            onerror: (response) => {
+                reject(new Error(`gmFetch 网络错误: ${response.statusText}`));
+            },
+            onprogress: (event) => {
+                if (event.lengthComputable && onProgress) {
+                    onProgress(event.loaded / event.total);
+                }
+            }
+        });
+    });
+}
+async function getVideoUrl(videoId) {
+    try {
+        const token = getToken();
+        if (!token) throw new Error("无法获取Token");
+        const authResponse = await fetch(`${window.location.origin}/api/jx-oresource/vod/video/play_auth/${videoId}?is_public=1`, {
+            headers: { 'authorization': `Bearer ${token}` }
+        });
+        if (!authResponse.ok) throw new Error(`获取视频凭证失败, 状态: ${authResponse.status}`);
+        const authData = await authResponse.json();
+        if (!authData.success || !authData.data || !authData.data.play_auth) {
+            throw new Error(authData.message || '返回的播放凭证数据格式不正确');
+        }
+        const playAuthData = JSON.parse(atob(authData.data.play_auth));
+        const s = {
+            vid: playAuthData.VideoMeta.VideoId,
+            accessId: playAuthData.AccessKeyId,
+            accessSecret: playAuthData.AccessKeySecret,
+            stsToken: playAuthData.SecurityToken,
+            domainRegion: playAuthData.Region,
+            authInfo: playAuthData.AuthInfo,
+            format: "mp4",
+            mediaType: "video"
+        };
+        const signatureNonce = crypto.randomUUID();
+        const params = {
+            AccessKeyId: s.accessId,
+            Action: "GetPlayInfo",
+            VideoId: s.vid,
+            Formats: s.format,
+            SecurityToken: s.stsToken,
+            StreamType: s.mediaType,
+            Format: "JSON",
+            Version: "2017-03-21",
+            SignatureMethod: "HMAC-SHA1",
+            SignatureVersion: "1.0",
+            SignatureNonce: signatureNonce,
+            AuthInfo: s.authInfo
+        };
+        const signature = makeChangeSiga(params, s.accessSecret);
+        const queryString = makeUTF8sort(params) + "&Signature=" + aliyunEncodeURI(signature);
+        const finalUrl = `https://vod.${s.domainRegion}.aliyuncs.com/?${queryString}`;
+        const playInfoResponse = await fetch(finalUrl);
+        if (!playInfoResponse.ok) {
+            const errorText = await playInfoResponse.text();
+            console.error('从阿里云获取播放信息失败，原始响应:', errorText);
+            throw new Error(`从阿里云获取播放信息失败, 状态: ${playInfoResponse.status}`);
+        }
+        const playInfoData = await playInfoResponse.json();
+        if (playInfoData && playInfoData.PlayInfoList && playInfoData.PlayInfoList.PlayInfo && playInfoData.PlayInfoList.PlayInfo.length > 0) {
+            const playInfos = playInfoData.PlayInfoList.PlayInfo;
+            const videoInfo = playInfos
+            .filter(p => p.Format === 'mp4')
+            .sort((a, b) => (b.Width || 0) - (a.Width || 0))[0];
+            const audioInfo = playInfos.find(p => p.Format === 'm4a');
+            return {
+                videoUrl: videoInfo ? videoInfo.PlayURL : null,
+                audioUrl: audioInfo ? audioInfo.PlayURL : null,
+            };
+        } else if (playInfoData.Code) {
+            throw new Error(`阿里云API错误: ${playInfoData.Code} - ${playInfoData.Message}`);
+        } else {
+            throw new Error('播放信息列表中没有可用的地址');
+        }
+    } catch (error) {
+        console.error(`获取视频/音频URL时出错 (Video ID: ${videoId}):`, error);
+        return { videoUrl: null, audioUrl: null };
+    }
+}
+async function extractAndEncodeAudio(videoUrl, onProgress) {
+    let worker = null;
+    try {
+        if (onProgress) onProgress(0.05, "下载中");
+        const videoData = await gmFetch(videoUrl, (progress) => {
+            if (onProgress) onProgress(0.05 + progress * 0.25, "下载中");
+        });
+        if (onProgress) onProgress(0.3, "解码中");
+        const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        const audioBuffer = await audioContext.decodeAudioData(videoData);
+        await audioContext.close();
+        if (onProgress) onProgress(0.6, "编码中");
+        return await new Promise((resolve, reject) => {
+            const workerBlob = new Blob([WavEncoderWorker], { type: 'application/javascript' });
+            worker = new Worker(URL.createObjectURL(workerBlob));
+            worker.onmessage = (e) => {
+                if (onProgress) onProgress(1, "完成");
+                resolve(e.data);
+                worker.terminate();
+            };
+            worker.onerror = (e) => {
+                console.error("WAV 编码 Worker 出错:", e);
+                reject(new Error(`WAV 编码失败: ${e.message}`));
+                worker.terminate();
+            };
+            const channels = [];
+            for (let i = 0; i < audioBuffer.numberOfChannels; i++) {
+                channels.push(audioBuffer.getChannelData(i));
+            }
+            worker.postMessage({
+                channels: channels,
+                sampleRate: audioBuffer.sampleRate,
+                length: audioBuffer.length
+            });
+        });
+    } catch (error) {
+        if (worker) worker.terminate();
+        console.error("从视频提取音频失败:", error);
+        throw error;
+    }
+}
+async function callSttApi(audioSource, sttConfig) {
+    const { sttProvider, sttEndpoint, sttApiKey, sttModel, apiKey: llmApiKey } = sttConfig;
+    if (!sttEndpoint) throw new Error("STT API 地址未配置。");
+    const finalApiKey = sttApiKey || llmApiKey;
+    if (!finalApiKey) throw new Error("STT API Key 未配置（也未提供备用的 LLM Key）。");
+    console.log(`[STT] 使用 [${sttProvider}] 提供商开始转录...`);
+    showNotification('🎧 语音转录中...', { type: 'info', duration: 10000 });
+    try {
+        switch (sttProvider) {
+            case 'openai_compatible':
+                return await callWhisperCompatibleApi(audioSource, sttEndpoint, finalApiKey, sttModel);
+            case 'gemini':
+                return await callGeminiSttApi(audioSource, sttEndpoint, finalApiKey, sttModel);
+            default:
+                throw new Error(`未知的 STT 提供商: ${sttProvider}`);
+        }
+    } catch (error) {
+        console.error('[STT] 语音转录失败:', error);
+        showNotification(`语音转录失败: ${error.message}`, { type: 'error', duration: 8000 });
+        throw error;
+    }
+}
+async function callWhisperCompatibleApi(audioSource, endpoint, apiKey, model) {
+    let audioBlob;
+    let fileName = 'audio.wav';
+    if (typeof audioSource === 'string') {
+        const audioResponse = await fetch(audioSource);
+        if (!audioResponse.ok) {
+            throw new Error(`下载音频文件失败, 状态: ${audioResponse.status}`);
+        }
+        audioBlob = await audioResponse.blob();
+        fileName = audioSource.split('/').pop().split('?')[0] || 'audio.mp3';
+    } else if (audioSource instanceof Blob) {
+        audioBlob = audioSource;
+    } else {
+        throw new Error('无效的音频源类型');
+    }
+    const formData = new FormData();
+    formData.append('file', audioBlob, fileName);
+    formData.append('model', model || 'whisper-1');
+    const sttApiResponse = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${apiKey}` },
+        body: formData
+    });
+    if (!sttApiResponse.ok) {
+        const errorText = await sttApiResponse.text();
+        throw new Error(`STT API 请求失败 (${sttApiResponse.status}): ${errorText}`);
+    }
+    const result = await sttApiResponse.json();
+    if (typeof result.text === 'string') {
+        showNotification('🎤 转录完成!', { type: 'success', duration: 2000 });
+        return result.text;
+    } else {
+        throw new Error("STT API 返回的数据格式不正确，未找到 'text' 字段。");
+    }
+}
+async function callGeminiSttApi(audioSource, endpoint, apiKey, model) {
+    let audioBlob;
+    let mimeType;
+    if (typeof audioSource === 'string') {
+        const audioResponse = await fetch(audioSource);
+        if (!audioResponse.ok) {
+            throw new Error(`下载音频文件失败, 状态: ${audioResponse.status}`);
+        }
+        audioBlob = await audioResponse.blob();
+        mimeType = audioBlob.type || 'audio/mp3';
+    } else if (audioSource instanceof Blob) {
+        audioBlob = audioSource;
+        mimeType = audioBlob.type;
+    } else {
+        throw new Error('无效的音频源类型');
+    }
+    const base64Audio = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(reader.result.split(',')[1]);
+        reader.onerror = reject;
+        reader.readAsDataURL(audioBlob);
+    });
+    const requestBody = {
+        contents: [
+            {
+                parts: [
+                    { text: "Please provide a transcript for this audio." },
+                    {
+                        inlineData: {
+                            mimeType: mimeType,
+                            data: base64Audio,
+                        },
+                    },
+                ],
+            },
+        ],
+    };
+    let finalEndpoint = endpoint.endsWith('/') ? endpoint : endpoint + '/';
+    finalEndpoint += `${model}:generateContent?key=${apiKey}`;
+    const sttApiResponse = await fetch(finalEndpoint, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(requestBody),
+    });
+    if (!sttApiResponse.ok) {
+        const errorText = await sttApiResponse.text();
+        throw new Error(`Gemini STT API 请求失败 (${sttApiResponse.status}): ${errorText}`);
+    }
+    const result = await sttApiResponse.json();
+    const transcription = result.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (typeof transcription === 'string') {
+        showNotification('🎤 转录完成 (Gemini)!', { type: 'success', duration: 2000 });
+        return transcription;
+    } else {
+        console.error('[STT-Gemini] 返回数据格式不正确:', result);
+        throw new Error("Gemini STT API 返回的数据格式不正确。");
+    }
+}
+function containsAudio(richTextContent) {
+    if (!richTextContent || typeof richTextContent !== 'string') return false;
+    try {
+        const jsonContent = JSON.parse(richTextContent);
+        if (jsonContent && Array.isArray(jsonContent.blocks)) {
+            return jsonContent.blocks.some(block =>
+                                           block.type === 'atomic' && block.data?.type === 'AUDIO'
+                                          );
+        }
+    } catch (e) {
+        return false;
+    }
+    return false;
+}
+function containsVideo(richTextContent) {
+    if (!richTextContent || typeof richTextContent !== 'string') return false;
+    try {
+        const jsonContent = JSON.parse(richTextContent);
+        if (jsonContent && Array.isArray(jsonContent.blocks)) {
+            return jsonContent.blocks.some(block =>
+                                           block.type === 'atomic' && block.data?.type === 'VIDEO'
+                                          );
+        }
+    } catch (e) {
+        return false;
+    }
+    return false;
+}
+function getQuestionType(typeCode) {
+    const typeMap = {
+        1: "单选题",
+        2: "多选题",
+        4: "填空题",
+        5: "判断题",
+        6: "简答题",
+        9: "数组题",
+        10: "编程题",
+        12: "排序题",
+        13: "匹配题"
+    };
+    return typeMap[typeCode] || "未知题型";
+}
+async function callXiaoyaStream(userPrompt, onChunk, onComplete, onError, signal) {
+    const effectiveSignal = signal || new AbortController().signal;
+    let timeoutId = null;
+    if (!signal) {
+        timeoutId = setTimeout(() => {
+            console.error("Xiaoya Stream fetch 超时 (内部)");
+            if (typeof onError === 'function') {
+                onError(new Error("小雅流式 API 网络错误: 请求超时 (内部)"));
+            }
+        }, 60000);
+    } else {
+        effectiveSignal.addEventListener('abort', () => {
+            console.log("Xiaoya Stream 请求被外部信号中止。");
+            if (typeof onError === 'function') {
+                onError(new DOMException('请求被中止', 'AbortError'));
+            }
+        }, { once: true });
+    }
+    try {
+        const bearerToken = getToken();
+        if (!bearerToken) {
+            throw new Error("无法获取 Bearer Token");
+        }
+        let jwtToken = null;
+        try {
+            const xyGlobalConfig = localStorage.getItem('XY_GLOBAL_CONFIG');
+            if (xyGlobalConfig) {
+                jwtToken = JSON.parse(xyGlobalConfig).xy_ai_token;
+            }
+        } catch (e) {
+            console.warn("解析 XY_GLOBAL_CONFIG 失败:", e);
+        }
+        if (!jwtToken) {
+            console.warn("无法从 localStorage 获取小雅 JWT Token，将尝试使用 Bearer Token");
+            jwtToken = bearerToken;
+        }
+        const groupId = getGroupIDFromUrl(window.location.href) || "";
+        const aiConfig = JSON.parse(localStorage.getItem('aiConfig') || '{}');
+        const xiaoyaAiMode = aiConfig.xiaoyaAiMode || 'deep_think';
+        const useDeepThink = xiaoyaAiMode === 'deep_think';
+        const requestBody = {
+            token: jwtToken,
+            ask_key: "chat_scene_dialogue",
+            ask_object: {
+                question: userPrompt,
+                multilingual_description: ""
+            },
+            deep_think_mode: useDeepThink,
+            group_id: groupId
+        };
+        console.log(`调用 Xiaoya Stream API (模式: ${useDeepThink ? '深度思考' : '快速'})`, { body: requestBody });
+        const response = await fetch(`${window.location.origin}/api/jx-oresource/assistant/chat/stream`, {
+            method: "POST",
+            headers: {
+                "accept": "*/*",
+                "authorization": `Bearer ${bearerToken}`,
+                "content-type": "application/json",
+            },
+            body: JSON.stringify(requestBody),
+            signal: effectiveSignal,
+        });
+        if (timeoutId) clearTimeout(timeoutId);
+        if (!response.ok) {
+            let errorMsg = `小雅流式 API 错误 (${response.status}): ${response.statusText}`;
+            try {
+                const errorData = await response.json();
+                errorMsg = `小雅流式 API 错误 (${response.status}): ${errorData.message || response.statusText}`;
+            } catch (e) {
+            }
+            console.error("Xiaoya Stream fetch 错误:", errorMsg);
+            if (typeof onError === 'function') {
+                onError(new Error(errorMsg));
+            }
+            return;
+        }
+        if (response.body) {
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder("utf-8");
+            let accumulatedContent = '';
+            let buffer = '';
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) {
+                    console.log("小雅流式处理已完成。");
+                    break;
+                }
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n');
+                buffer = lines.pop() || '';
+                for (let i = 0; i < lines.length; i++) {
+                    const line = lines[i];
+                    if (line.startsWith('data: ')) {
+                        const dataJson = line.substring(6).trim();
+                        if (dataJson === '[DONE]') {
+                            console.log("小雅流式处理收到 [DONE]");
+                            continue;
+                        }
+                        try {
+                            const data = JSON.parse(dataJson);
+                            const delta = data.choices?.[0]?.delta;
+                            if (delta) {
+                                const deltaContent = delta.content;
+                                const reasoningContent = delta.reasoning_content || delta.reasoning;
+                                if (reasoningContent) {
+                                    if (typeof onChunk === 'function') {
+                                        onChunk(`<think>${reasoningContent}</think>`);
+                                    }
+                                } else if (deltaContent) {
+                                    accumulatedContent += deltaContent;
+                                    if (typeof onChunk === 'function') {
+                                        onChunk(deltaContent);
+                                    }
+                                }
+                            }
+                        } catch (parseError) {
+                            if (dataJson) {
+                                console.warn("小雅流式 SSE JSON 解析错误:", parseError, "数据:", dataJson);
+                            }
+                        }
+                    }
+                }
+            }
+            if (typeof onComplete === 'function') {
+                onComplete(accumulatedContent);
+            }
+        } else {
+            console.error("Xiaoya Stream 响应体为空");
+            if (typeof onError === 'function') {
+                onError(new Error("小雅流式 API 错误: 响应体为空"));
+            }
+        }
+    } catch (error) {
+        if (timeoutId) clearTimeout(timeoutId);
+        if (error.name === 'AbortError') {
+            console.log("Xiaoya Stream 请求被中止.");
+            if (!signal && typeof onError === 'function') {
+                onError(error);
+            }
+        } else {
+            console.error("Xiaoya Stream 调用/处理失败:", error);
+            if (typeof onError === 'function') {
+                onError(new Error(`小雅流式 API 网络或处理错误: ${error.message}`));
+            }
+        }
+    }
+}
+async function callOpenAI(endpoint, apiKey, userPrompt, modelId, temperature = 0.7, max_tokens = 8000, onChunk = null, onComplete = null, onError = null, signal = null, visionEnabled = false) {
+    const effectiveSignal = signal || new AbortController().signal;
+    let timeoutId = null;
+    if (!signal) {
+        timeoutId = setTimeout(() => {
+            console.error("OpenAI fetch 超时 (内部)");
+            if (typeof onError === 'function') {
+                onError(new Error("OpenAI API 网络错误: 请求超时 (内部)"));
+            }
+        }, 60000);
+    } else {
+        effectiveSignal.addEventListener('abort', () => {
+            console.log("OpenAI 请求被外部信号中止。");
+            if (typeof onError === 'function') {
+                onError(new DOMException('请求被中止', 'AbortError'));
+            }
+        }, { once: true });
+    }
+    try {
+        const aiConfig = JSON.parse(localStorage.getItem('aiConfig') || '{}');
+        const disableMaxTokens = aiConfig.disableMaxTokens || false;
+        const modelToUse = modelId || "gpt-4o";
+        const payloadData = {
+            model: modelToUse,
+            messages: [{
+                role: "user",
+                content: visionEnabled ? userPrompt : String(userPrompt)
+            }],
+            temperature: temperature,
+            stream: true
+        };
+        if (!disableMaxTokens) {
+            payloadData.max_tokens = max_tokens;
+        }
+        const payload = JSON.stringify(payloadData);
+        console.log("调用 OpenAI (流式 Fetch):", { endpoint, model: modelToUse, temperature, max_tokens: disableMaxTokens ? 'unlimited' : max_tokens });
+        const disableCorrection = aiConfig.disableCorrection || aiConfig.isPreset || false;
+        let finalEndpoint = endpoint;
+        if (!disableCorrection) {
+            let cleanEndpoint = endpoint.split('?')[0].replace(/\/$/, '');
+            const targetPath = '/v1/chat/completions';
+            if (!cleanEndpoint.endsWith(targetPath)) {
+                if (cleanEndpoint.includes('/v1')) {
+                    cleanEndpoint = cleanEndpoint.substring(0, cleanEndpoint.indexOf('/v1')) + targetPath;
+                } else {
+                    cleanEndpoint += targetPath;
+                }
+                console.warn("OpenAI Endpoint 已自动修正为:", cleanEndpoint);
+            }
+            finalEndpoint = cleanEndpoint + (endpoint.includes('?') ? endpoint.substring(endpoint.indexOf('?')) : '');
+        }
+        const response = await fetch(finalEndpoint, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
-            },
-            body: JSON.stringify(requestBody),
+                'Authorization': `Bearer ${apiKey}`
+                },
+            body: payload,
+            signal: effectiveSignal
         });
-        if (!sttApiResponse.ok) {
-            const errorText = await sttApiResponse.text();
-            throw new Error(`Gemini STT API 请求失败 (${sttApiResponse.status}): ${errorText}`);
-        }
-        const result = await sttApiResponse.json();
-        const transcription = result.candidates?.[0]?.content?.parts?.[0]?.text;
-        if (typeof transcription === 'string') {
-            showNotification('🎤 转录完成 (Gemini)!', { type: 'success', duration: 2000 });
-            return transcription;
-        } else {
-            console.error('[STT-Gemini] 返回数据格式不正确:', result);
-            throw new Error("Gemini STT API 返回的数据格式不正确。");
-        }
-    }
-    function containsAudio(richTextContent) {
-        if (!richTextContent || typeof richTextContent !== 'string') return false;
-        try {
-            const jsonContent = JSON.parse(richTextContent);
-            if (jsonContent && Array.isArray(jsonContent.blocks)) {
-                return jsonContent.blocks.some(block =>
-                    block.type === 'atomic' && block.data?.type === 'AUDIO'
-                );
-            }
-        } catch (e) {
-            return false;
-        }
-        return false;
-    }
-    function containsVideo(richTextContent) {
-        if (!richTextContent || typeof richTextContent !== 'string') return false;
-        try {
-            const jsonContent = JSON.parse(richTextContent);
-            if (jsonContent && Array.isArray(jsonContent.blocks)) {
-                return jsonContent.blocks.some(block =>
-                    block.type === 'atomic' && block.data?.type === 'VIDEO'
-                );
-            }
-        } catch (e) {
-            return false;
-        }
-        return false;
-    }
-    function getQuestionType(typeCode) {
-        const typeMap = {
-            1: "单选题",
-            2: "多选题",
-            4: "填空题",
-            5: "判断题",
-            6: "简答题",
-            9: "数组题",
-            10: "编程题",
-            12: "排序题",
-            13: "匹配题"
-        };
-        return typeMap[typeCode] || "未知题型";
-    }
-    async function callXiaoyaStream(userPrompt, onChunk, onComplete, onError, signal) {
-        const effectiveSignal = signal || new AbortController().signal;
-        let timeoutId = null;
-        if (!signal) {
-            timeoutId = setTimeout(() => {
-                console.error("Xiaoya Stream fetch 超时 (内部)");
-                if (typeof onError === 'function') {
-                    onError(new Error("小雅流式 API 网络错误: 请求超时 (内部)"));
-                }
-            }, 60000);
-        } else {
-            effectiveSignal.addEventListener('abort', () => {
-                console.log("Xiaoya Stream 请求被外部信号中止。");
-                if (typeof onError === 'function') {
-                    onError(new DOMException('请求被中止', 'AbortError'));
-                }
-            }, { once: true });
-        }
-        try {
-            const bearerToken = getToken();
-            if (!bearerToken) {
-                throw new Error("无法获取 Bearer Token");
-            }
-            let jwtToken = null;
+        if (timeoutId) clearTimeout(timeoutId);
+        if (!response.ok) {
+            let errorMsg = `OpenAI API 错误 (${response.status}): ${response.statusText}`;
             try {
-                const xyGlobalConfig = localStorage.getItem('XY_GLOBAL_CONFIG');
-                if (xyGlobalConfig) {
-                    jwtToken = JSON.parse(xyGlobalConfig).xy_ai_token;
+                const errorData = await response.json();
+                errorMsg = `OpenAI API 错误 (${response.status}): ${errorData.error?.message || errorData.message || response.statusText}`;
+            } catch (e) {
+                try {
+                    const textError = await response.text();
+                    console.error("OpenAI 原始错误响应:", textError);
+                    errorMsg += ` - ${textError.substring(0, 100)}`;
+                } catch (textE) { }
+            }
+            console.error("OpenAI fetch 错误:", errorMsg);
+            if (typeof onError === 'function') {
+                onError(new Error(errorMsg));
+            }
+            return;
+        }
+        if (response.body) {
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder("utf-8");
+            let accumulatedContent = '';
+            let buffer = '';
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) {
+                    console.log("OpenAI 流式处理已完成。");
+                    break;
+                }
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n');
+                buffer = lines.pop() || '';
+                for (let j = 0; j < lines.length; j++) {
+                    const line = lines[j];
+                    if (line.startsWith('data: ')) {
+                        const dataJson = line.substring(6).trim();
+                        if (dataJson === '[DONE]') {
+                            console.log("OpenAI 流式处理收到 [DONE]");
+                            continue;
+                        }
+                        try {
+                            const data = JSON.parse(dataJson);
+                            const delta = data.choices?.[0]?.delta;
+                            if (delta) {
+                                const deltaContent = delta.content;
+                                const reasoningContent = delta.reasoning_content || delta.reasoning;
+                                if (reasoningContent) {
+                                    if (typeof onChunk === 'function') {
+                                        onChunk(`<think>${reasoningContent}</think>`);
+                                    }
+                                } else if (deltaContent) {
+                                    accumulatedContent += deltaContent;
+                                    if (typeof onChunk === 'function') {
+                                        onChunk(deltaContent);
+                                    }
+                                }
+                            }
+                        } catch (parseError) {
+                            if (dataJson) {
+                                console.warn("SSE JSON 解析错误:", parseError, "数据:", dataJson);
+                            }
+                        }
+                    }
+                }
+            }
+            if (typeof onComplete === 'function') {
+                onComplete(accumulatedContent);
+            }
+        } else {
+            console.error("OpenAI 响应体为空");
+            if (typeof onError === 'function') {
+                onError(new Error("OpenAI API 错误: 响应体为空"));
+            }
+        }
+    } catch (error) {
+        if (timeoutId) clearTimeout(timeoutId);
+        if (error.name === 'AbortError') {
+            console.log("OpenAI 请求被中止.");
+            if (!signal && typeof onError === 'function') {
+                onError(error);
+            }
+        } else {
+            console.error("OpenAI 调用/处理失败:", error);
+            if (typeof onError === 'function') {
+                onError(new Error(`OpenAI API 网络或处理错误: ${error.message}`));
+            }
+        }
+    }
+}
+async function callGemini(endpoint, apiKey, userPrompt, modelId, temperature = 0.7, max_tokens = 8000, onChunk = null, onComplete = null, onError = null, signal = null, visionEnabled = false) {
+    const effectiveSignal = signal || new AbortController().signal;
+    let timeoutId = null;
+    if (!signal) {
+        timeoutId = setTimeout(() => {
+            console.error("Gemini fetch 超时 (内部)");
+            if (typeof onError === 'function') {
+                onError(new Error("Gemini API 网络错误: 请求超时 (内部)"));
+            }
+        }, 120000);
+    } else {
+        effectiveSignal.addEventListener('abort', () => {
+            console.log("Gemini 请求被外部信号中止。");
+            if (typeof onError === 'function') {
+                onError(new DOMException('请求被中止', 'AbortError'));
+            }
+        }, { once: true });
+    }
+    try {
+        const aiConfig = JSON.parse(localStorage.getItem('aiConfig') || '{}');
+        const disableCorrection = aiConfig.disableCorrection || false;
+        const disableMaxTokens = aiConfig.disableMaxTokens || false;
+        const geminiThinkingEnabled = aiConfig.geminiThinkingEnabled || false;
+        const geminiThinkingBudgetMode = aiConfig.geminiThinkingBudgetMode || 'dynamic';
+        const geminiThinkingBudgetCustom = aiConfig.geminiThinkingBudgetCustom || 8192;
+        const modelToUse = modelId || "gemini-2.5-flash";
+        const apiVersion = "v1beta";
+        let finalEndpoint;
+        if (disableCorrection) {
+            finalEndpoint = endpoint;
+            if (!finalEndpoint.includes('key=')) {
+                finalEndpoint += (finalEndpoint.includes('?') ? '&' : '?') + `key=${apiKey}`;
+            }
+            if (!finalEndpoint.includes('alt=sse')) {
+                finalEndpoint += (finalEndpoint.includes('?') ? '&' : '?') + 'alt=sse';
+            }
+        } else {
+            let cleanBaseEndpoint = endpoint.replace(/\/v\d+(beta)?\/models\/.*$/, '').replace(/\/models\/.*$/, '').replace(/\/$/, '');
+            finalEndpoint = `${cleanBaseEndpoint}/${apiVersion}/models/${modelToUse}:streamGenerateContent?key=${apiKey}&alt=sse`;
+        }
+        const generationConfig = {
+            temperature: temperature
+        };
+        if (!disableMaxTokens) {
+            generationConfig.maxOutputTokens = max_tokens;
+        }
+        if (geminiThinkingEnabled) {
+            const thinkingConfig = { includeThoughts: true };
+            switch (geminiThinkingBudgetMode) {
+                case 'dynamic':
+                    thinkingConfig.thinkingBudget = -1;
+                    break;
+                case 'disabled':
+                    thinkingConfig.thinkingBudget = 0;
+                    break;
+                case 'custom':
+                    thinkingConfig.thinkingBudget = geminiThinkingBudgetCustom;
+                    break;
+            }
+            generationConfig.thinkingConfig = thinkingConfig;
+        }
+        console.log("调用 Gemini (流式 Fetch):", { fullEndpoint: finalEndpoint, generationConfig: generationConfig });
+        let finalParts;
+        if (Array.isArray(userPrompt) && userPrompt.some(p => p.type === 'video_data')) {
+            console.log("[Gemini] 构建媒体理解请求体...");
+            finalParts = userPrompt.map(part => {
+                if (part.type === 'video_data') {
+                    return { inline_data: { mime_type: part.video_data.mimeType, data: part.video_data.base64 } };
+                } else if (part.type === 'image_url') {
+                    const base64Data = part.image_url.url;
+                    const parts = base64Data.split(',');
+                    const mimeMatch = parts[0].match(/:(.*?);/);
+                    return { inline_data: { mime_type: mimeMatch[1], data: parts[1] } };
+                }
+                return { text: part.text };
+            });
+        } else if (visionEnabled) {
+            finalParts = userPrompt.map(part => {
+                if (part.type === 'image_url') {
+                    const base64Data = part.image_url.url;
+                    const parts = base64Data.split(',');
+                    const mimeMatch = parts[0].match(/:(.*?);/);
+                    return { inline_data: { mime_type: mimeMatch[1], data: parts[1] } };
+                }
+                return { text: part.text };
+            });
+        } else {
+            finalParts = [{ text: userPrompt }];
+        }
+        const payload = JSON.stringify({
+            contents: [{ parts: finalParts }],
+            generationConfig: generationConfig
+        });
+        const response = await fetch(finalEndpoint, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: payload,
+            signal: effectiveSignal
+        });
+        if (timeoutId) clearTimeout(timeoutId);
+        if (!response.ok) {
+            let errorMsg = `Gemini API 错误 (${response.status}): ${response.statusText}`;
+            try {
+                const errorData = await response.json();
+                errorMsg = `Gemini API 错误 (${response.status}): ${errorData.error?.message || errorData.message || response.statusText}`;
+                if (response.status === 500 && errorMsg.toLowerCase().includes('internal')) {
+                    errorMsg += ' (这通常是Google服务器临时问题，请稍后重试或尝试更换模型，如 gemini-2.5-flash)。';
                 }
             } catch (e) {
-                console.warn("解析 XY_GLOBAL_CONFIG 失败:", e);
-            }
-            if (!jwtToken) {
-                console.warn("无法从 localStorage 获取小雅 JWT Token，将尝试使用 Bearer Token");
-                jwtToken = bearerToken;
-            }
-            const groupId = getGroupIDFromUrl(window.location.href) || "";
-            const aiConfig = JSON.parse(localStorage.getItem('aiConfig') || '{}');
-            const xiaoyaAiMode = aiConfig.xiaoyaAiMode || 'deep_think';
-            const useDeepThink = xiaoyaAiMode === 'deep_think';
-            const requestBody = {
-                token: jwtToken,
-                ask_key: "chat_scene_dialogue",
-                ask_object: {
-                    question: userPrompt,
-                    multilingual_description: ""
-                },
-                deep_think_mode: useDeepThink,
-                group_id: groupId
-            };
-            console.log(`调用 Xiaoya Stream API (模式: ${useDeepThink ? '深度思考' : '快速'})`, { body: requestBody });
-            const response = await fetch(`${window.location.origin}/api/jx-oresource/assistant/chat/stream`, {
-                method: "POST",
-                headers: {
-                    "accept": "*/*",
-                    "authorization": `Bearer ${bearerToken}`,
-                    "content-type": "application/json",
-                },
-                body: JSON.stringify(requestBody),
-                signal: effectiveSignal,
-            });
-            if (timeoutId) clearTimeout(timeoutId);
-            if (!response.ok) {
-                let errorMsg = `小雅流式 API 错误 (${response.status}): ${response.statusText}`;
                 try {
-                    const errorData = await response.json();
-                    errorMsg = `小雅流式 API 错误 (${response.status}): ${errorData.message || response.statusText}`;
-                } catch (e) {
-                }
-                console.error("Xiaoya Stream fetch 错误:", errorMsg);
-                if (typeof onError === 'function') {
-                    onError(new Error(errorMsg));
-                }
-                return;
+                    const textError = await response.text();
+                    console.error("Gemini 原始错误响应:", textError);
+                    errorMsg += ` - ${textError.substring(0, 100)}`;
+                } catch (textE) { }
             }
-            if (response.body) {
-                const reader = response.body.getReader();
-                const decoder = new TextDecoder("utf-8");
-                let accumulatedContent = '';
-                let buffer = '';
-                while (true) {
-                    const { done, value } = await reader.read();
-                    if (done) {
-                        console.log("小雅流式处理已完成。");
-                        break;
-                    }
-                    buffer += decoder.decode(value, { stream: true });
-                    const lines = buffer.split('\n');
-                    buffer = lines.pop() || '';
-                    for (let i = 0; i < lines.length; i++) {
-                        const line = lines[i];
-                        if (line.startsWith('data: ')) {
-                            const dataJson = line.substring(6).trim();
-                            if (dataJson === '[DONE]') {
-                                console.log("小雅流式处理收到 [DONE]");
-                                continue;
-                            }
-                            try {
-                                const data = JSON.parse(dataJson);
-                                const delta = data.choices?.[0]?.delta;
-                                if (delta) {
-                                    const deltaContent = delta.content;
-                                    const reasoningContent = delta.reasoning_content || delta.reasoning;
-                                    if (reasoningContent) {
-                                        if (typeof onChunk === 'function') {
-                                            onChunk(`<think>${reasoningContent}</think>`);
-                                        }
-                                    } else if (deltaContent) {
-                                        accumulatedContent += deltaContent;
-                                        if (typeof onChunk === 'function') {
-                                            onChunk(deltaContent);
-                                        }
-                                    }
-                                }
-                            } catch (parseError) {
-                                if (dataJson) {
-                                    console.warn("小雅流式 SSE JSON 解析错误:", parseError, "数据:", dataJson);
-                                }
-                            }
-                        }
-                    }
-                }
-                if (typeof onComplete === 'function') {
-                    onComplete(accumulatedContent);
-                }
-            } else {
-                console.error("Xiaoya Stream 响应体为空");
-                if (typeof onError === 'function') {
-                    onError(new Error("小雅流式 API 错误: 响应体为空"));
-                }
+            console.error("Gemini fetch 错误:", errorMsg);
+            if (typeof onError === 'function') {
+                onError(new Error(errorMsg));
             }
-        } catch (error) {
-            if (timeoutId) clearTimeout(timeoutId);
-            if (error.name === 'AbortError') {
-                console.log("Xiaoya Stream 请求被中止.");
-                if (!signal && typeof onError === 'function') {
-                    onError(error);
-                }
-            } else {
-                console.error("Xiaoya Stream 调用/处理失败:", error);
-                if (typeof onError === 'function') {
-                    onError(new Error(`小雅流式 API 网络或处理错误: ${error.message}`));
-                }
-            }
+            return;
         }
-    }
-    async function callOpenAI(endpoint, apiKey, userPrompt, modelId, temperature = 0.7, max_tokens = 8000, onChunk = null, onComplete = null, onError = null, signal = null, visionEnabled = false) {
-        const effectiveSignal = signal || new AbortController().signal;
-        let timeoutId = null;
-        if (!signal) {
-            timeoutId = setTimeout(() => {
-                console.error("OpenAI fetch 超时 (内部)");
-                if (typeof onError === 'function') {
-                    onError(new Error("OpenAI API 网络错误: 请求超时 (内部)"));
+        if (response.body) {
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder("utf-8");
+            let accumulatedAnswerContent = '';
+            let buffer = '';
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) {
+                    console.log("Gemini 流式处理已完成。");
+                    break;
                 }
-            }, 60000);
-        } else {
-            effectiveSignal.addEventListener('abort', () => {
-                console.log("OpenAI 请求被外部信号中止。");
-                if (typeof onError === 'function') {
-                    onError(new DOMException('请求被中止', 'AbortError'));
-                }
-            }, { once: true });
-        }
-        try {
-            const aiConfig = JSON.parse(localStorage.getItem('aiConfig') || '{}');
-            const disableMaxTokens = aiConfig.disableMaxTokens || false;
-            const modelToUse = modelId || "gpt-4o";
-            const payloadData = {
-                model: modelToUse,
-                messages: [{
-                    role: "user",
-                    content: visionEnabled ? userPrompt : String(userPrompt)
-                }],
-                temperature: temperature,
-                stream: true
-            };
-            if (!disableMaxTokens) {
-                payloadData.max_tokens = max_tokens;
-            }
-            const payload = JSON.stringify(payloadData);
-            console.log("调用 OpenAI (流式 Fetch):", { endpoint, model: modelToUse, temperature, max_tokens: disableMaxTokens ? 'unlimited' : max_tokens });
-            const disableCorrection = aiConfig.disableCorrection || aiConfig.isPreset || false;
-            let finalEndpoint = endpoint;
-            if (!disableCorrection) {
-                let cleanEndpoint = endpoint.split('?')[0].replace(/\/$/, '');
-                const targetPath = '/v1/chat/completions';
-                if (!cleanEndpoint.endsWith(targetPath)) {
-                    if (cleanEndpoint.includes('/v1')) {
-                        cleanEndpoint = cleanEndpoint.substring(0, cleanEndpoint.indexOf('/v1')) + targetPath;
-                    } else {
-                        cleanEndpoint += targetPath;
-                    }
-                    console.warn("OpenAI Endpoint 已自动修正为:", cleanEndpoint);
-                }
-                finalEndpoint = cleanEndpoint + (endpoint.includes('?') ? endpoint.substring(endpoint.indexOf('?')) : '');
-            }
-            const response = await fetch(finalEndpoint, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${apiKey}`
-                },
-                body: payload,
-                signal: effectiveSignal
-            });
-            if (timeoutId) clearTimeout(timeoutId);
-            if (!response.ok) {
-                let errorMsg = `OpenAI API 错误 (${response.status}): ${response.statusText}`;
-                try {
-                    const errorData = await response.json();
-                    errorMsg = `OpenAI API 错误 (${response.status}): ${errorData.error?.message || errorData.message || response.statusText}`;
-                } catch (e) {
-                    try {
-                        const textError = await response.text();
-                        console.error("OpenAI 原始错误响应:", textError);
-                        errorMsg += ` - ${textError.substring(0, 100)}`;
-                    } catch (textE) { }
-                }
-                console.error("OpenAI fetch 错误:", errorMsg);
-                if (typeof onError === 'function') {
-                    onError(new Error(errorMsg));
-                }
-                return;
-            }
-            if (response.body) {
-                const reader = response.body.getReader();
-                const decoder = new TextDecoder("utf-8");
-                let accumulatedContent = '';
-                let buffer = '';
-                while (true) {
-                    const { done, value } = await reader.read();
-                    if (done) {
-                        console.log("OpenAI 流式处理已完成。");
-                        break;
-                    }
-                    buffer += decoder.decode(value, { stream: true });
-                    const lines = buffer.split('\n');
-                    buffer = lines.pop() || '';
-                    for (let j = 0; j < lines.length; j++) {
-                        const line = lines[j];
-                        if (line.startsWith('data: ')) {
-                            const dataJson = line.substring(6).trim();
-                            if (dataJson === '[DONE]') {
-                                console.log("OpenAI 流式处理收到 [DONE]");
-                                continue;
-                            }
-                            try {
-                                const data = JSON.parse(dataJson);
-                                const delta = data.choices?.[0]?.delta;
-                                if (delta) {
-                                    const deltaContent = delta.content;
-                                    const reasoningContent = delta.reasoning_content || delta.reasoning;
-                                    if (reasoningContent) {
-                                        if (typeof onChunk === 'function') {
-                                            onChunk(`<think>${reasoningContent}</think>`);
-                                        }
-                                    } else if (deltaContent) {
-                                        accumulatedContent += deltaContent;
-                                        if (typeof onChunk === 'function') {
-                                            onChunk(deltaContent);
-                                        }
-                                    }
-                                }
-                            } catch (parseError) {
-                                if (dataJson) {
-                                    console.warn("SSE JSON 解析错误:", parseError, "数据:", dataJson);
-                                }
-                            }
-                        }
-                    }
-                }
-                if (typeof onComplete === 'function') {
-                    onComplete(accumulatedContent);
-                }
-            } else {
-                console.error("OpenAI 响应体为空");
-                if (typeof onError === 'function') {
-                    onError(new Error("OpenAI API 错误: 响应体为空"));
-                }
-            }
-        } catch (error) {
-            if (timeoutId) clearTimeout(timeoutId);
-            if (error.name === 'AbortError') {
-                console.log("OpenAI 请求被中止.");
-                if (!signal && typeof onError === 'function') {
-                    onError(error);
-                }
-            } else {
-                console.error("OpenAI 调用/处理失败:", error);
-                if (typeof onError === 'function') {
-                    onError(new Error(`OpenAI API 网络或处理错误: ${error.message}`));
-                }
-            }
-        }
-    }
-    async function callGemini(endpoint, apiKey, userPrompt, modelId, temperature = 0.7, max_tokens = 8000, onChunk = null, onComplete = null, onError = null, signal = null, visionEnabled = false) {
-        const effectiveSignal = signal || new AbortController().signal;
-        let timeoutId = null;
-        if (!signal) {
-            timeoutId = setTimeout(() => {
-                console.error("Gemini fetch 超时 (内部)");
-                if (typeof onError === 'function') {
-                    onError(new Error("Gemini API 网络错误: 请求超时 (内部)"));
-                }
-            }, 120000);
-        } else {
-            effectiveSignal.addEventListener('abort', () => {
-                console.log("Gemini 请求被外部信号中止。");
-                if (typeof onError === 'function') {
-                    onError(new DOMException('请求被中止', 'AbortError'));
-                }
-            }, { once: true });
-        }
-        try {
-            const aiConfig = JSON.parse(localStorage.getItem('aiConfig') || '{}');
-            const disableCorrection = aiConfig.disableCorrection || false;
-            const disableMaxTokens = aiConfig.disableMaxTokens || false;
-            const geminiThinkingEnabled = aiConfig.geminiThinkingEnabled || false;
-            const geminiThinkingBudgetMode = aiConfig.geminiThinkingBudgetMode || 'dynamic';
-            const geminiThinkingBudgetCustom = aiConfig.geminiThinkingBudgetCustom || 8192;
-            const modelToUse = modelId || "gemini-2.5-flash";
-            const apiVersion = "v1beta";
-            let finalEndpoint;
-            if (disableCorrection) {
-                finalEndpoint = endpoint;
-                if (!finalEndpoint.includes('key=')) {
-                    finalEndpoint += (finalEndpoint.includes('?') ? '&' : '?') + `key=${apiKey}`;
-                }
-                if (!finalEndpoint.includes('alt=sse')) {
-                    finalEndpoint += (finalEndpoint.includes('?') ? '&' : '?') + 'alt=sse';
-                }
-            } else {
-                let cleanBaseEndpoint = endpoint.replace(/\/v\d+(beta)?\/models\/.*$/, '').replace(/\/models\/.*$/, '').replace(/\/$/, '');
-                finalEndpoint = `${cleanBaseEndpoint}/${apiVersion}/models/${modelToUse}:streamGenerateContent?key=${apiKey}&alt=sse`;
-            }
-            const generationConfig = {
-                temperature: temperature
-            };
-            if (!disableMaxTokens) {
-                generationConfig.maxOutputTokens = max_tokens;
-            }
-            if (geminiThinkingEnabled) {
-                const thinkingConfig = { includeThoughts: true };
-                switch (geminiThinkingBudgetMode) {
-                    case 'dynamic':
-                        thinkingConfig.thinkingBudget = -1;
-                        break;
-                    case 'disabled':
-                        thinkingConfig.thinkingBudget = 0;
-                        break;
-                    case 'custom':
-                        thinkingConfig.thinkingBudget = geminiThinkingBudgetCustom;
-                        break;
-                }
-                generationConfig.thinkingConfig = thinkingConfig;
-            }
-            console.log("调用 Gemini (流式 Fetch):", { fullEndpoint: finalEndpoint, generationConfig: generationConfig });
-            let finalParts;
-            if (Array.isArray(userPrompt) && userPrompt.some(p => p.type === 'video_data')) {
-                console.log("[Gemini] 构建媒体理解请求体...");
-                finalParts = userPrompt.map(part => {
-                    if (part.type === 'video_data') {
-                        return { inline_data: { mime_type: part.video_data.mimeType, data: part.video_data.base64 } };
-                    } else if (part.type === 'image_url') {
-                        const base64Data = part.image_url.url;
-                        const parts = base64Data.split(',');
-                        const mimeMatch = parts[0].match(/:(.*?);/);
-                        return { inline_data: { mime_type: mimeMatch[1], data: parts[1] } };
-                    }
-                    return { text: part.text };
-                });
-            } else if (visionEnabled) {
-                finalParts = userPrompt.map(part => {
-                    if (part.type === 'image_url') {
-                        const base64Data = part.image_url.url;
-                        const parts = base64Data.split(',');
-                        const mimeMatch = parts[0].match(/:(.*?);/);
-                        return { inline_data: { mime_type: mimeMatch[1], data: parts[1] } };
-                    }
-                    return { text: part.text };
-                });
-            } else {
-                finalParts = [{ text: userPrompt }];
-            }
-            const payload = JSON.stringify({
-                contents: [{ parts: finalParts }],
-                generationConfig: generationConfig
-            });
-            const response = await fetch(finalEndpoint, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: payload,
-                signal: effectiveSignal
-            });
-            if (timeoutId) clearTimeout(timeoutId);
-            if (!response.ok) {
-                let errorMsg = `Gemini API 错误 (${response.status}): ${response.statusText}`;
-                try {
-                    const errorData = await response.json();
-                    errorMsg = `Gemini API 错误 (${response.status}): ${errorData.error?.message || errorData.message || response.statusText}`;
-                    if (response.status === 500 && errorMsg.toLowerCase().includes('internal')) {
-                        errorMsg += ' (这通常是Google服务器临时问题，请稍后重试或尝试更换模型，如 gemini-2.5-flash)。';
-                    }
-                } catch (e) {
-                    try {
-                        const textError = await response.text();
-                        console.error("Gemini 原始错误响应:", textError);
-                        errorMsg += ` - ${textError.substring(0, 100)}`;
-                    } catch (textE) { }
-                }
-                console.error("Gemini fetch 错误:", errorMsg);
-                if (typeof onError === 'function') {
-                    onError(new Error(errorMsg));
-                }
-                return;
-            }
-            if (response.body) {
-                const reader = response.body.getReader();
-                const decoder = new TextDecoder("utf-8");
-                let accumulatedAnswerContent = '';
-                let buffer = '';
-                while (true) {
-                    const { done, value } = await reader.read();
-                    if (done) {
-                        console.log("Gemini 流式处理已完成。");
-                        break;
-                    }
-                    buffer += decoder.decode(value, { stream: true });
-                    const lines = buffer.split('\n');
-                    buffer = lines.pop() || '';
-                    function handleGeminiLine(line) {
-                        if (line.startsWith('data: ')) {
-                            const dataJson = line.substring(6).trim();
-                            try {
-                                const data = JSON.parse(dataJson);
-                                const parts = data.candidates?.[0]?.content?.parts;
-                                if (parts && Array.isArray(parts)) {
-                                    for (const part of parts) {
-                                        if (part.text) {
-                                            if (part.thought) {
-                                                if (typeof onChunk === 'function') {
-                                                    onChunk(`<think>${part.text}</think>`);
-                                                }
-                                            } else {
-                                                accumulatedAnswerContent += part.text;
-                                                if (typeof onChunk === 'function') {
-                                                    onChunk(part.text);
-                                                }
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n');
+                buffer = lines.pop() || '';
+                function handleGeminiLine(line) {
+                    if (line.startsWith('data: ')) {
+                        const dataJson = line.substring(6).trim();
+                        try {
+                            const data = JSON.parse(dataJson);
+                            const parts = data.candidates?.[0]?.content?.parts;
+                            if (parts && Array.isArray(parts)) {
+                                for (const part of parts) {
+                                    if (part.text) {
+                                        if (part.thought) {
+                                            if (typeof onChunk === 'function') {
+                                                onChunk(`<think>${part.text}</think>`);
+                                            }
+                                        } else {
+                                            accumulatedAnswerContent += part.text;
+                                            if (typeof onChunk === 'function') {
+                                                onChunk(part.text);
                                             }
                                         }
                                     }
                                 }
-                                const finishReason = data.candidates?.[0]?.finishReason;
-                                if (finishReason && finishReason !== "STOP") {
-                                    console.warn("Gemini 流式处理结束，原因：", finishReason);
-                                    if (finishReason === "SAFETY") {
-                                        const safetyError = new Error("Gemini API 错误: 响应因安全设置被阻止。");
-                                        if (typeof onError === 'function') onError(safetyError);
-                                    }
+                            }
+                            const finishReason = data.candidates?.[0]?.finishReason;
+                            if (finishReason && finishReason !== "STOP") {
+                                console.warn("Gemini 流式处理结束，原因：", finishReason);
+                                if (finishReason === "SAFETY") {
+                                    const safetyError = new Error("Gemini API 错误: 响应因安全设置被阻止。");
+                                    if (typeof onError === 'function') onError(safetyError);
                                 }
-                                const promptFeedback = data.promptFeedback;
-                                if (promptFeedback?.blockReason) {
-                                    console.error(`Gemini API 错误: 提示因 ${promptFeedback.blockReason} 被阻止`, data);
-                                    const promptError = new Error(`Gemini API 错误: 提示因 ${promptFeedback.blockReason} 被阻止`);
-                                    if (typeof onError === 'function') onError(promptError);
-                                }
-                            } catch (parseError) {
-                                if (dataJson) {
-                                    console.warn("Gemini SSE JSON 解析错误:", parseError, "数据:", dataJson);
-                                }
+                            }
+                            const promptFeedback = data.promptFeedback;
+                            if (promptFeedback?.blockReason) {
+                                console.error(`Gemini API 错误: 提示因 ${promptFeedback.blockReason} 被阻止`, data);
+                                const promptError = new Error(`Gemini API 错误: 提示因 ${promptFeedback.blockReason} 被阻止`);
+                                if (typeof onError === 'function') onError(promptError);
+                            }
+                        } catch (parseError) {
+                            if (dataJson) {
+                                console.warn("Gemini SSE JSON 解析错误:", parseError, "数据:", dataJson);
                             }
                         }
                     }
-                    lines.forEach(handleGeminiLine);
                 }
-                if (typeof onComplete === 'function') {
-                    onComplete(accumulatedAnswerContent);
-                }
-            } else {
-                console.error("Gemini 响应体为空");
-                if (typeof onError === 'function') {
-                    onError(new Error("Gemini API 错误: 响应体为空"));
-                }
+                lines.forEach(handleGeminiLine);
             }
-        } catch (error) {
-            if (timeoutId) clearTimeout(timeoutId);
-            if (error.name === 'AbortError') {
-                console.log("Gemini 请求被中止.");
-                if (!signal && typeof onError === 'function') {
-                    onError(error);
-                }
-            } else {
-                console.error("Gemini 调用/处理失败:", error);
-                if (typeof onError === 'function') {
-                    onError(new Error(`Gemini API 网络或处理错误: ${error.message}`));
-                }
+            if (typeof onComplete === 'function') {
+                onComplete(accumulatedAnswerContent);
+            }
+        } else {
+            console.error("Gemini 响应体为空");
+            if (typeof onError === 'function') {
+                onError(new Error("Gemini API 错误: 响应体为空"));
+            }
+        }
+    } catch (error) {
+        if (timeoutId) clearTimeout(timeoutId);
+        if (error.name === 'AbortError') {
+            console.log("Gemini 请求被中止.");
+            if (!signal && typeof onError === 'function') {
+                onError(error);
+            }
+        } else {
+            console.error("Gemini 调用/处理失败:", error);
+            if (typeof onError === 'function') {
+                onError(new Error(`Gemini API 网络或处理错误: ${error.message}`));
             }
         }
     }
-    async function callAnthropic(endpoint, apiKey, userPrompt, modelId, temperature = 0.7, max_tokens = 8000, onChunk = null, onComplete = null, onError = null, signal = null, visionEnabled = false) {
-        const effectiveSignal = signal || new AbortController().signal;
-        let timeoutId = null;
-        if (!signal) {
-            timeoutId = setTimeout(() => {
-                console.error("Anthropic fetch 超时 (内部)");
-                if (typeof onError === 'function') {
-                    onError(new Error("Anthropic API 网络错误: 请求超时 (内部)"));
-                }
-            }, 60000);
-        } else {
-            effectiveSignal.addEventListener('abort', () => {
-                console.log("Anthropic 请求被外部信号中止。");
-                if (typeof onError === 'function') {
-                    onError(new DOMException('请求被中止', 'AbortError'));
-                }
-            }, { once: true });
-        }
-        try {
-            const aiConfig = JSON.parse(localStorage.getItem('aiConfig') || '{}');
-            const disableMaxTokens = aiConfig.disableMaxTokens || false;
-            const modelToUse = modelId || "claude-sonnet-4-20250514";
-            let finalContent;
-            if (visionEnabled) {
-                finalContent = userPrompt.map(part => {
-                    if (part.type === 'image_url') {
-                        const base64Data = part.image_url.url;
-                        const parts = base64Data.split(',');
-                        const mimeMatch = parts[0].match(/:(.*?);/);
-                        return { type: 'image', source: { type: 'base64', media_type: mimeMatch[1], data: parts[1] } };
-                    }
-                    return { type: 'text', text: part.text };
-                });
-            } else {
-                finalContent = [{ type: 'text', text: userPrompt }];
+}
+async function callAnthropic(endpoint, apiKey, userPrompt, modelId, temperature = 0.7, max_tokens = 8000, onChunk = null, onComplete = null, onError = null, signal = null, visionEnabled = false) {
+    const effectiveSignal = signal || new AbortController().signal;
+    let timeoutId = null;
+    if (!signal) {
+        timeoutId = setTimeout(() => {
+            console.error("Anthropic fetch 超时 (内部)");
+            if (typeof onError === 'function') {
+                onError(new Error("Anthropic API 网络错误: 请求超时 (内部)"));
             }
-            const payloadData = {
-                model: modelToUse,
-                messages: [{ role: "user", content: finalContent }],
-                temperature: temperature,
-                stream: true
-            };
-            if (!disableMaxTokens) {
-                payloadData.max_tokens = max_tokens;
+        }, 60000);
+    } else {
+        effectiveSignal.addEventListener('abort', () => {
+            console.log("Anthropic 请求被外部信号中止。");
+            if (typeof onError === 'function') {
+                onError(new DOMException('请求被中止', 'AbortError'));
             }
-            const payload = JSON.stringify(payloadData);
-            console.log("调用 Anthropic (流式 Fetch):", { endpoint, model: modelToUse, temperature, max_tokens: disableMaxTokens ? 'unlimited' : max_tokens });
-            const disableCorrection = aiConfig.disableCorrection || false;
-            let finalEndpoint = endpoint;
-            if (!disableCorrection) {
-                let cleanEndpoint = endpoint.split('?')[0].replace(/\/$/, '');
-                const targetPath = '/v1/messages';
-                if (!cleanEndpoint.endsWith(targetPath)) {
-                    if (cleanEndpoint.includes('/v1')) {
-                        cleanEndpoint = cleanEndpoint.substring(0, cleanEndpoint.indexOf('/v1')) + targetPath;
-                    } else {
-                        cleanEndpoint += targetPath;
-                    }
-                    console.warn("Anthropic Endpoint 已自动修正为:", cleanEndpoint);
+        }, { once: true });
+    }
+    try {
+        const aiConfig = JSON.parse(localStorage.getItem('aiConfig') || '{}');
+        const disableMaxTokens = aiConfig.disableMaxTokens || false;
+        const modelToUse = modelId || "claude-sonnet-4-20250514";
+        let finalContent;
+        if (visionEnabled) {
+            finalContent = userPrompt.map(part => {
+                if (part.type === 'image_url') {
+                    const base64Data = part.image_url.url;
+                    const parts = base64Data.split(',');
+                    const mimeMatch = parts[0].match(/:(.*?);/);
+                    return { type: 'image', source: { type: 'base64', media_type: mimeMatch[1], data: parts[1] } };
                 }
-                finalEndpoint = cleanEndpoint + (endpoint.includes('?') ? endpoint.substring(endpoint.indexOf('?')) : '');
-            }
-            const response = await fetch(finalEndpoint, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'x-api-key': apiKey,
-                },
-                body: payload,
-                signal: effectiveSignal
+                return { type: 'text', text: part.text };
             });
-            if (timeoutId) clearTimeout(timeoutId);
-            if (!response.ok) {
-                let errorMsg = `Anthropic API 错误 (${response.status}): ${response.statusText}`;
-                try {
-                    const errorData = await response.json();
-                    errorMsg = `Anthropic API 错误 (${response.status}): ${errorData.error?.type || errorData.type || response.statusText} - ${errorData.error?.message || errorData.message || ''}`;
-                } catch (e) {
-                    try {
-                        const textError = await response.text();
-                        console.error("Anthropic 原始错误响应:", textError);
-                        errorMsg += ` - ${textError.substring(0, 100)}`;
-                    } catch (textE) { }
+        } else {
+            finalContent = [{ type: 'text', text: userPrompt }];
+        }
+        const payloadData = {
+            model: modelToUse,
+            messages: [{ role: "user", content: finalContent }],
+            temperature: temperature,
+            stream: true
+        };
+        if (!disableMaxTokens) {
+            payloadData.max_tokens = max_tokens;
+        }
+        const payload = JSON.stringify(payloadData);
+        console.log("调用 Anthropic (流式 Fetch):", { endpoint, model: modelToUse, temperature, max_tokens: disableMaxTokens ? 'unlimited' : max_tokens });
+        const disableCorrection = aiConfig.disableCorrection || false;
+        let finalEndpoint = endpoint;
+        if (!disableCorrection) {
+            let cleanEndpoint = endpoint.split('?')[0].replace(/\/$/, '');
+            const targetPath = '/v1/messages';
+            if (!cleanEndpoint.endsWith(targetPath)) {
+                if (cleanEndpoint.includes('/v1')) {
+                    cleanEndpoint = cleanEndpoint.substring(0, cleanEndpoint.indexOf('/v1')) + targetPath;
+                } else {
+                    cleanEndpoint += targetPath;
                 }
-                console.error("Anthropic fetch 错误:", errorMsg);
-                if (typeof onError === 'function') {
-                    onError(new Error(errorMsg));
-                }
-                return;
+                console.warn("Anthropic Endpoint 已自动修正为:", cleanEndpoint);
             }
-            if (response.body) {
-                const reader = response.body.getReader();
-                const decoder = new TextDecoder("utf-8");
-                let accumulatedContent = '';
-                let buffer = '';
-                let streamEnded = false;
-                while (!streamEnded) {
-                    const { done, value } = await reader.read();
-                    if (done) {
-                        console.log("Anthropic 流式处理已完成。");
-                        streamEnded = true;
-                        break;
-                    }
-                    buffer += decoder.decode(value, { stream: true });
-                    const blocks = buffer.split('\n\n');
-                    buffer = blocks.pop() || '';
-                    blocks.forEach(block => {
-                        if (!block.trim()) return;
-                        let eventType = null;
-                        let dataJson = null;
-                        const lines = block.split('\n');
-                        for (let k = 0; k < lines.length; k++) {
-                            const line = lines[k];
-                            if (line.startsWith('event: ')) {
-                                eventType = line.substring(7).trim();
-                            } else if (line.startsWith('data: ')) {
-                                dataJson = line.substring(6).trim();
-                            }
+            finalEndpoint = cleanEndpoint + (endpoint.includes('?') ? endpoint.substring(endpoint.indexOf('?')) : '');
+        }
+        const response = await fetch(finalEndpoint, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'x-api-key': apiKey,
+            },
+            body: payload,
+            signal: effectiveSignal
+        });
+        if (timeoutId) clearTimeout(timeoutId);
+        if (!response.ok) {
+            let errorMsg = `Anthropic API 错误 (${response.status}): ${response.statusText}`;
+            try {
+                const errorData = await response.json();
+                errorMsg = `Anthropic API 错误 (${response.status}): ${errorData.error?.type || errorData.type || response.statusText} - ${errorData.error?.message || errorData.message || ''}`;
+            } catch (e) {
+                try {
+                    const textError = await response.text();
+                    console.error("Anthropic 原始错误响应:", textError);
+                    errorMsg += ` - ${textError.substring(0, 100)}`;
+                } catch (textE) { }
+            }
+            console.error("Anthropic fetch 错误:", errorMsg);
+            if (typeof onError === 'function') {
+                onError(new Error(errorMsg));
+            }
+            return;
+        }
+        if (response.body) {
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder("utf-8");
+            let accumulatedContent = '';
+            let buffer = '';
+            let streamEnded = false;
+            while (!streamEnded) {
+                const { done, value } = await reader.read();
+                if (done) {
+                    console.log("Anthropic 流式处理已完成。");
+                    streamEnded = true;
+                    break;
+                }
+                buffer += decoder.decode(value, { stream: true });
+                const blocks = buffer.split('\n\n');
+                buffer = blocks.pop() || '';
+                blocks.forEach(block => {
+                    if (!block.trim()) return;
+                    let eventType = null;
+                    let dataJson = null;
+                    const lines = block.split('\n');
+                    for (let k = 0; k < lines.length; k++) {
+                        const line = lines[k];
+                        if (line.startsWith('event: ')) {
+                            eventType = line.substring(7).trim();
+                        } else if (line.startsWith('data: ')) {
+                            dataJson = line.substring(6).trim();
                         }
-                        if (eventType && dataJson) {
-                            try {
-                                const data = JSON.parse(dataJson);
-                                if (eventType === 'content_block_delta') {
-                                    if (data.type === 'content_block_delta' && data.delta?.type === 'text_delta') {
-                                        const delta = data.delta.text;
-                                        accumulatedContent += delta;
-                                        if (typeof onChunk === 'function') {
-                                            onChunk(delta);
-                                        }
-                                    } else if (data.type === 'content_block_delta' && data.delta?.type === 'thinking_delta') {
-                                        const thinkingDelta = data.delta.thinking;
-                                        if (thinkingDelta && typeof onChunk === 'function') {
-                                            onChunk(`<think>${thinkingDelta}</think>`);
-                                        }
+                    }
+                    if (eventType && dataJson) {
+                        try {
+                            const data = JSON.parse(dataJson);
+                            if (eventType === 'content_block_delta') {
+                                if (data.type === 'content_block_delta' && data.delta?.type === 'text_delta') {
+                                    const delta = data.delta.text;
+                                    accumulatedContent += delta;
+                                    if (typeof onChunk === 'function') {
+                                        onChunk(delta);
                                     }
-                                } else if (eventType === 'message_start') {
-                                } else if (eventType === 'message_delta') {
-                                } else if (eventType === 'message_stop') {
-                                    console.log("Anthropic 流式传输已停止 (收到 message_stop 事件)");
+                                } else if (data.type === 'content_block_delta' && data.delta?.type === 'thinking_delta') {
+                                    const thinkingDelta = data.delta.thinking;
+                                    if (thinkingDelta && typeof onChunk === 'function') {
+                                        onChunk(`<think>${thinkingDelta}</think>`);
+                                    }
+                                }
+                            } else if (eventType === 'message_start') {
+                            } else if (eventType === 'message_delta') {
+                            } else if (eventType === 'message_stop') {
+                                console.log("Anthropic 流式传输已停止 (收到 message_stop 事件)");
+                                streamEnded = true;
+                            } else if (eventType === 'ping') {
+                            } else if (eventType === 'error') {
+                                console.error("Anthropic 流式传输错误事件:", data);
+                                {
+                                    const streamError = new Error(`Anthropic API 错误: ${data.error?.type} - ${data.error?.message}`);
+                                    if (typeof onError === 'function') onError(streamError);
                                     streamEnded = true;
-                                } else if (eventType === 'ping') {
-                                } else if (eventType === 'error') {
-                                    console.error("Anthropic 流式传输错误事件:", data);
-                                    {
-                                        const streamError = new Error(`Anthropic API 错误: ${data.error?.type} - ${data.error?.message}`);
-                                        if (typeof onError === 'function') onError(streamError);
-                                        streamEnded = true;
-                                    }
-                                } else {
-                                    console.warn("未知的 Anthropic 事件类型:", eventType, data);
                                 }
-                            } catch (parseError) {
-                                console.warn("Anthropic SSE JSON 解析错误:", parseError, "数据:", dataJson);
+                            } else {
+                                console.warn("未知的 Anthropic 事件类型:", eventType, data);
                             }
+                        } catch (parseError) {
+                            console.warn("Anthropic SSE JSON 解析错误:", parseError, "数据:", dataJson);
                         }
-                    });
-                }
-                if (typeof onComplete === 'function') {
-                    onComplete(accumulatedContent);
-                }
-            } else {
-                console.error("Anthropic 响应体为空");
-                if (typeof onError === 'function') {
-                    onError(new Error("Anthropic API 错误: 响应体为空"));
-                }
+                    }
+                });
             }
-        } catch (error) {
-            if (timeoutId) clearTimeout(timeoutId);
-            if (error.name === 'AbortError') {
-                console.log("Anthropic 请求被中止.");
-                if (!signal && typeof onError === 'function') {
-                    onError(error);
-                }
-            } else {
-                console.error("Anthropic 调用/处理失败:", error);
-                if (typeof onError === 'function') {
-                    onError(new Error(`Anthropic API 网络或处理错误: ${error.message}`));
-                }
+            if (typeof onComplete === 'function') {
+                onComplete(accumulatedContent);
             }
-        }
-    }
-    async function callAzureOpenAI(endpoint, apiKey, apiVersion, modelId, userPrompt, temperature = 0.7, max_tokens = 8000, onChunk = null, onComplete = null, onError = null, signal = null, visionEnabled = false) {
-        const effectiveSignal = signal || new AbortController().signal;
-        let timeoutId = null;
-        if (!signal) {
-            timeoutId = setTimeout(() => {
-                console.error("Azure OpenAI fetch 超时 (内部)");
-                if (typeof onError === 'function') {
-                    onError(new Error("Azure OpenAI API 网络错误: 请求超时 (内部)"));
-                }
-            }, 60000);
         } else {
-            effectiveSignal.addEventListener('abort', () => {
-                console.log("Azure OpenAI 请求被外部信号中止。");
-                if (typeof onError === 'function') {
-                    onError(new DOMException('请求被中止', 'AbortError'));
-                }
-            }, { once: true });
+            console.error("Anthropic 响应体为空");
+            if (typeof onError === 'function') {
+                onError(new Error("Anthropic API 错误: 响应体为空"));
+            }
         }
-        try {
-            const aiConfig = JSON.parse(localStorage.getItem('aiConfig') || '{}');
-            const disableCorrection = aiConfig.disableCorrection || false;
-            const disableMaxTokens = aiConfig.disableMaxTokens || false;
-            const version = apiVersion || '2024-05-01-preview';
-            let finalEndpoint;
-            let cleanEndpointBase = endpoint.split('?')[0].replace(/\/$/, '');
-            const urlParams = new URLSearchParams(endpoint.split('?')[1] || '');
-            if (!urlParams.has('api-version')) {
-                urlParams.set('api-version', version);
+    } catch (error) {
+        if (timeoutId) clearTimeout(timeoutId);
+        if (error.name === 'AbortError') {
+            console.log("Anthropic 请求被中止.");
+            if (!signal && typeof onError === 'function') {
+                onError(error);
             }
-            if (disableCorrection) {
-                finalEndpoint = `${cleanEndpointBase}?${urlParams.toString()}`;
-            } else {
-                const isOpenAIStyle = cleanEndpointBase.includes('.openai.azure.com');
-                const isAIServicesStyle = cleanEndpointBase.includes('.services.ai.azure.com') || cleanEndpointBase.includes('.inference.ai.azure.com');
-                if (!isOpenAIStyle && !isAIServicesStyle) {
-                    console.warn("Azure Endpoint URL hostname does not seem standard (expected '*.openai.azure.com' or '*.services.ai.azure.com' or '*.inference.ai.azure.com'):", cleanEndpointBase);
-                }
-                if (isOpenAIStyle) {
-                    if (!cleanEndpointBase.includes('/openai/deployments/')) {
-                        console.warn("Azure OpenAI-style endpoint path might be incomplete. Expected format: '.../openai/deployments/<deployment-id>/chat/completions'. Current:", cleanEndpointBase);
-                    } else if (!cleanEndpointBase.endsWith('/chat/completions')) {
-                        console.warn("Azure OpenAI-style endpoint path might be incomplete. Ensuring it ends with '/chat/completions'. Current:", cleanEndpointBase);
-                        if (/\/openai\/deployments\/[^/]+$/.test(cleanEndpointBase)) {
-                            cleanEndpointBase += '/chat/completions';
-                        }
+        } else {
+            console.error("Anthropic 调用/处理失败:", error);
+            if (typeof onError === 'function') {
+                onError(new Error(`Anthropic API 网络或处理错误: ${error.message}`));
+            }
+        }
+    }
+}
+async function callAzureOpenAI(endpoint, apiKey, apiVersion, modelId, userPrompt, temperature = 0.7, max_tokens = 8000, onChunk = null, onComplete = null, onError = null, signal = null, visionEnabled = false) {
+    const effectiveSignal = signal || new AbortController().signal;
+    let timeoutId = null;
+    if (!signal) {
+        timeoutId = setTimeout(() => {
+            console.error("Azure OpenAI fetch 超时 (内部)");
+            if (typeof onError === 'function') {
+                onError(new Error("Azure OpenAI API 网络错误: 请求超时 (内部)"));
+            }
+        }, 60000);
+    } else {
+        effectiveSignal.addEventListener('abort', () => {
+            console.log("Azure OpenAI 请求被外部信号中止。");
+            if (typeof onError === 'function') {
+                onError(new DOMException('请求被中止', 'AbortError'));
+            }
+        }, { once: true });
+    }
+    try {
+        const aiConfig = JSON.parse(localStorage.getItem('aiConfig') || '{}');
+        const disableCorrection = aiConfig.disableCorrection || false;
+        const disableMaxTokens = aiConfig.disableMaxTokens || false;
+        const version = apiVersion || '2024-05-01-preview';
+        let finalEndpoint;
+        let cleanEndpointBase = endpoint.split('?')[0].replace(/\/$/, '');
+        const urlParams = new URLSearchParams(endpoint.split('?')[1] || '');
+        if (!urlParams.has('api-version')) {
+            urlParams.set('api-version', version);
+        }
+        if (disableCorrection) {
+            finalEndpoint = `${cleanEndpointBase}?${urlParams.toString()}`;
+        } else {
+            const isOpenAIStyle = cleanEndpointBase.includes('.openai.azure.com');
+            const isAIServicesStyle = cleanEndpointBase.includes('.services.ai.azure.com') || cleanEndpointBase.includes('.inference.ai.azure.com');
+            if (!isOpenAIStyle && !isAIServicesStyle) {
+                console.warn("Azure Endpoint URL hostname does not seem standard (expected '*.openai.azure.com' or '*.services.ai.azure.com' or '*.inference.ai.azure.com'):", cleanEndpointBase);
+            }
+            if (isOpenAIStyle) {
+                if (!cleanEndpointBase.includes('/openai/deployments/')) {
+                    console.warn("Azure OpenAI-style endpoint path might be incomplete. Expected format: '.../openai/deployments/<deployment-id>/chat/completions'. Current:", cleanEndpointBase);
+                } else if (!cleanEndpointBase.endsWith('/chat/completions')) {
+                    console.warn("Azure OpenAI-style endpoint path might be incomplete. Ensuring it ends with '/chat/completions'. Current:", cleanEndpointBase);
+                    if (/\/openai\/deployments\/[^/]+$/.test(cleanEndpointBase)) {
+                        cleanEndpointBase += '/chat/completions';
                     }
-                } else if (isAIServicesStyle) {
-                    if (!cleanEndpointBase.endsWith('/models/chat/completions')) {
-                        console.warn("Azure AI Services-style endpoint path might be incomplete. Expected format: '.../models/chat/completions'. Current:", cleanEndpointBase);
-                        if (cleanEndpointBase.endsWith('/models/chat')) {
-                            cleanEndpointBase += '/completions';
-                        }
+                }
+            } else if (isAIServicesStyle) {
+                if (!cleanEndpointBase.endsWith('/models/chat/completions')) {
+                    console.warn("Azure AI Services-style endpoint path might be incomplete. Expected format: '.../models/chat/completions'. Current:", cleanEndpointBase);
+                    if (cleanEndpointBase.endsWith('/models/chat')) {
+                        cleanEndpointBase += '/completions';
                     }
                 }
-                finalEndpoint = `${cleanEndpointBase}?${urlParams.toString()}`;
             }
-            console.log("调用 Azure OpenAI (流式 Fetch):", { fullEndpoint: finalEndpoint, model: modelId, temperature, max_tokens: disableMaxTokens ? 'unlimited' : max_tokens });
-            const requestBody = {
-                model: modelId,
-                messages: [{
-                    role: "user",
-                    content: visionEnabled ? userPrompt : [{ type: "text", text: String(userPrompt) }]
-                }],
-                temperature: temperature,
-                stream: true
-            };
-            if (!disableMaxTokens) {
-                requestBody.max_tokens = max_tokens;
-            }
-            const payload = JSON.stringify(requestBody);
-            const response = await fetch(finalEndpoint, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'api-key': apiKey
-                },
-                body: payload,
-                signal: effectiveSignal
-            });
-            if (timeoutId) clearTimeout(timeoutId);
-            if (!response.ok) {
-                let errorMsg = `Azure OpenAI API 错误 (${response.status}): ${response.statusText}`;
+            finalEndpoint = `${cleanEndpointBase}?${urlParams.toString()}`;
+        }
+        console.log("调用 Azure OpenAI (流式 Fetch):", { fullEndpoint: finalEndpoint, model: modelId, temperature, max_tokens: disableMaxTokens ? 'unlimited' : max_tokens });
+        const requestBody = {
+            model: modelId,
+            messages: [{
+                role: "user",
+                content: visionEnabled ? userPrompt : [{ type: "text", text: String(userPrompt) }]
+            }],
+            temperature: temperature,
+            stream: true
+        };
+        if (!disableMaxTokens) {
+            requestBody.max_tokens = max_tokens;
+        }
+        const payload = JSON.stringify(requestBody);
+        const response = await fetch(finalEndpoint, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'api-key': apiKey
+            },
+            body: payload,
+            signal: effectiveSignal
+        });
+        if (timeoutId) clearTimeout(timeoutId);
+        if (!response.ok) {
+            let errorMsg = `Azure OpenAI API 错误 (${response.status}): ${response.statusText}`;
+            try {
+                const errorData = await response.json();
+                errorMsg = `Azure OpenAI API 错误 (${response.status}): ${errorData.error?.message || errorData.message || response.statusText}`;
+            } catch (e) {
                 try {
-                    const errorData = await response.json();
-                    errorMsg = `Azure OpenAI API 错误 (${response.status}): ${errorData.error?.message || errorData.message || response.statusText}`;
-                } catch (e) {
-                    try {
-                        const textError = await response.text();
-                        console.error("Azure OpenAI 原始错误响应:", textError);
-                        errorMsg += ` - ${textError.substring(0, 100)}`;
-                    } catch (textE) { }
-                }
-                console.error("Azure OpenAI fetch 错误:", errorMsg);
-                if (typeof onError === 'function') {
-                    onError(new Error(errorMsg));
-                }
-                return;
+                    const textError = await response.text();
+                    console.error("Azure OpenAI 原始错误响应:", textError);
+                    errorMsg += ` - ${textError.substring(0, 100)}`;
+                } catch (textE) { }
             }
-            if (response.body) {
-                const reader = response.body.getReader();
-                const decoder = new TextDecoder("utf-8");
-                let accumulatedContent = '';
-                let buffer = '';
-                while (true) {
-                    const { done, value } = await reader.read();
-                    if (done) {
-                        console.log("Azure OpenAI 流式处理已完成。");
-                        break;
-                    }
-                    buffer += decoder.decode(value, { stream: true });
-                    const lines = buffer.split('\n');
-                    buffer = lines.pop() || '';
-                    function handleAzureLine(line) {
-                        if (line.startsWith('data: ')) {
-                            const dataJson = line.substring(6).trim();
-                            if (dataJson === '[DONE]') {
-                                console.log("Azure OpenAI 流式处理收到 [DONE]");
-                                return;
+            console.error("Azure OpenAI fetch 错误:", errorMsg);
+            if (typeof onError === 'function') {
+                onError(new Error(errorMsg));
+            }
+            return;
+        }
+        if (response.body) {
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder("utf-8");
+            let accumulatedContent = '';
+            let buffer = '';
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) {
+                    console.log("Azure OpenAI 流式处理已完成。");
+                    break;
+                }
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n');
+                buffer = lines.pop() || '';
+                function handleAzureLine(line) {
+                    if (line.startsWith('data: ')) {
+                        const dataJson = line.substring(6).trim();
+                        if (dataJson === '[DONE]') {
+                            console.log("Azure OpenAI 流式处理收到 [DONE]");
+                            return;
+                        }
+                        try {
+                            const data = JSON.parse(dataJson);
+                            const choice = data.choices?.[0];
+                            if (choice) {
+                                const delta = choice.delta;
+                                if (delta) {
+                                    const deltaContent = delta.content;
+                                    const reasoningContent = delta.reasoning_content || delta.reasoning;
+                                    if (reasoningContent) {
+                                        if (typeof onChunk === 'function') {
+                                            onChunk(`<think>${reasoningContent}</think>`);
+                                        }
+                                    } else if (deltaContent) {
+                                        accumulatedContent += deltaContent;
+                                        if (typeof onChunk === 'function') {
+                                            onChunk(deltaContent);
+                                        }
+                                    }
+                                }
+                                const finishReason = choice.finish_reason;
+                                if (finishReason && finishReason !== "stop") {
+                                    console.warn("Azure OpenAI 流式处理结束，原因：", finishReason, "数据：", dataJson);
+                                    if (finishReason === "content_filter") {
+                                        let filterMessage = "Azure OpenAI API 错误: 响应因内容过滤器被阻止。";
+                                        if (data.prompt_filter_results && data.prompt_filter_results.length > 0) {
+                                            filterMessage = `Azure OpenAI API 错误: 提示因内容过滤器 (${data.prompt_filter_results[0].content_filter_results.hate.filtered ? 'hate' : ''}...)被阻止。`;
+                                        } else if (choice.content_filter_results) {
+                                            const results = choice.content_filter_results;
+                                            let reasons = [];
+                                            if (results.hate?.filtered) reasons.push("hate");
+                                            if (results.self_harm?.filtered) reasons.push("self_harm");
+                                            if (results.sexual?.filtered) reasons.push("sexual");
+                                            if (results.violence?.filtered) reasons.push("violence");
+                                            if (reasons.length > 0) filterMessage += ` 检测到: ${reasons.join(', ')}.`;
+                                        }
+                                        const filterError = new Error(filterMessage);
+                                        if (typeof onError === 'function') onError(filterError);
+                                    }
+                                }
                             }
-                            try {
-                                const data = JSON.parse(dataJson);
-                                const choice = data.choices?.[0];
-                                if (choice) {
-                                    const delta = choice.delta;
-                                    if (delta) {
-                                        const deltaContent = delta.content;
-                                        const reasoningContent = delta.reasoning_content || delta.reasoning;
-                                        if (reasoningContent) {
-                                            if (typeof onChunk === 'function') {
-                                                onChunk(`<think>${reasoningContent}</think>`);
-                                            }
-                                        } else if (deltaContent) {
-                                            accumulatedContent += deltaContent;
-                                            if (typeof onChunk === 'function') {
-                                                onChunk(deltaContent);
-                                            }
-                                        }
-                                    }
-                                    const finishReason = choice.finish_reason;
-                                    if (finishReason && finishReason !== "stop") {
-                                        console.warn("Azure OpenAI 流式处理结束，原因：", finishReason, "数据：", dataJson);
-                                        if (finishReason === "content_filter") {
-                                            let filterMessage = "Azure OpenAI API 错误: 响应因内容过滤器被阻止。";
-                                            if (data.prompt_filter_results && data.prompt_filter_results.length > 0) {
-                                                filterMessage = `Azure OpenAI API 错误: 提示因内容过滤器 (${data.prompt_filter_results[0].content_filter_results.hate.filtered ? 'hate' : ''}...)被阻止。`;
-                                            } else if (choice.content_filter_results) {
-                                                const results = choice.content_filter_results;
-                                                let reasons = [];
-                                                if (results.hate?.filtered) reasons.push("hate");
-                                                if (results.self_harm?.filtered) reasons.push("self_harm");
-                                                if (results.sexual?.filtered) reasons.push("sexual");
-                                                if (results.violence?.filtered) reasons.push("violence");
-                                                if (reasons.length > 0) filterMessage += ` 检测到: ${reasons.join(', ')}.`;
-                                            }
-                                            const filterError = new Error(filterMessage);
-                                            if (typeof onError === 'function') onError(filterError);
-                                        }
-                                    }
-                                }
-                            } catch (parseError) {
-                                if (dataJson) {
-                                    console.warn("Azure SSE JSON 解析错误:", parseError, "数据:", dataJson);
-                                }
+                        } catch (parseError) {
+                            if (dataJson) {
+                                console.warn("Azure SSE JSON 解析错误:", parseError, "数据:", dataJson);
                             }
                         }
                     }
-                    lines.forEach(handleAzureLine);
                 }
-                if (typeof onComplete === 'function') {
-                    onComplete(accumulatedContent);
-                }
-            } else {
-                console.error("Azure OpenAI 响应体为空");
-                if (typeof onError === 'function') {
-                    onError(new Error("Azure OpenAI API 错误: 响应体为空"));
-                }
+                lines.forEach(handleAzureLine);
             }
-        } catch (error) {
-            if (timeoutId) clearTimeout(timeoutId);
-            if (error.name === 'AbortError') {
-                console.log("Azure OpenAI 请求被中止.");
-                if (!signal && typeof onError === 'function') {
-                    onError(error);
-                }
-            } else {
-                console.error("Azure OpenAI 调用/处理失败:", error);
-                if (typeof onError === 'function') {
-                    onError(new Error(`Azure OpenAI API 网络或处理错误: ${error.message}`));
-                }
+            if (typeof onComplete === 'function') {
+                onComplete(accumulatedContent);
+            }
+        } else {
+            console.error("Azure OpenAI 响应体为空");
+            if (typeof onError === 'function') {
+                onError(new Error("Azure OpenAI API 错误: 响应体为空"));
+            }
+        }
+    } catch (error) {
+        if (timeoutId) clearTimeout(timeoutId);
+        if (error.name === 'AbortError') {
+            console.log("Azure OpenAI 请求被中止.");
+            if (!signal && typeof onError === 'function') {
+                onError(error);
+            }
+        } else {
+            console.error("Azure OpenAI 调用/处理失败:", error);
+            if (typeof onError === 'function') {
+                onError(new Error(`Azure OpenAI API 网络或处理错误: ${error.message}`));
             }
         }
     }
-    async function dispatchAICall(config, prompt, onChunk, onComplete, onError, signal) {
-        const { provider, endpoint, apiKey, model, temperature, max_tokens, azureApiVersion } = config;
-        if (provider === 'default') {
-            const textPrompt = typeof prompt === 'string' ? prompt : prompt.map(p => p.text || '').join('\n');
-            return callXiaoyaStream(textPrompt, onChunk, onComplete, onError, signal);
-        }
-        if (!endpoint || !apiKey) {
-            throw new Error(`AI 提供商 "${provider}" 的 API 地址或 Key 未配置。`);
-        }
-        const isVision = Array.isArray(prompt);
-        switch (provider) {
-            case 'openai':
-                return callOpenAI(endpoint, apiKey, prompt, model, temperature, max_tokens, onChunk, onComplete, onError, signal, isVision);
-            case 'gemini':
-                return callGemini(endpoint, apiKey, prompt, model, temperature, max_tokens, onChunk, onComplete, onError, signal, isVision);
-            case 'anthropic':
-                return callAnthropic(endpoint, apiKey, prompt, model, temperature, max_tokens, onChunk, onComplete, onError, signal, isVision);
-            case 'azure':
-                return callAzureOpenAI(endpoint, apiKey, azureApiVersion, model, prompt, temperature, max_tokens, onChunk, onComplete, onError, signal, isVision);
-            default:
-                throw new Error(`不支持的 AI 提供商: ${provider}`);
-        }
+}
+async function dispatchAICall(config, prompt, onChunk, onComplete, onError, signal) {
+    const { provider, endpoint, apiKey, model, temperature, max_tokens, azureApiVersion } = config;
+    if (provider === 'default') {
+        const textPrompt = typeof prompt === 'string' ? prompt : prompt.map(p => p.text || '').join('\n');
+        return callXiaoyaStream(textPrompt, onChunk, onComplete, onError, signal);
     }
-    class ThinkingHandler {
-        constructor(container, options = {}) {
-            this.container = container;
-            this.autoScrollEnabled = options.autoScrollEnabled === true;
-            this.thinkingProcessDiv = null;
-            this.timelineContainer = null;
-            this.detailsElement = null;
-            this._steps = [];
-            this._currentStepIndex = -1;
-            this._buffer = "";
-            this.isUserScrolledUp = false;
-            this._isFirstChunk = true;
-        }
-        _ensureUi() {
-            if (!this.container) return false;
-            if (!this.thinkingProcessDiv || !this.container.contains(this.thinkingProcessDiv)) {
-                this.thinkingProcessDiv = this.container.querySelector('.ai-thinking-process');
-                if (!this.thinkingProcessDiv) {
-                    this.thinkingProcessDiv = document.createElement('div');
-                    this.thinkingProcessDiv.className = 'ai-thinking-process';
-                    this.thinkingProcessDiv.style.marginTop = '15px';
-                    this.thinkingProcessDiv.style.display = 'none';
-                    this.container.appendChild(this.thinkingProcessDiv);
-                }
-                this.detailsElement = this.thinkingProcessDiv.querySelector('details');
-                if (!this.detailsElement) {
-                    this.thinkingProcessDiv.innerHTML = `
+    if (!endpoint || !apiKey) {
+        throw new Error(`AI 提供商 "${provider}" 的 API 地址或 Key 未配置。`);
+    }
+    const isVision = Array.isArray(prompt);
+    switch (provider) {
+        case 'openai':
+            return callOpenAI(endpoint, apiKey, prompt, model, temperature, max_tokens, onChunk, onComplete, onError, signal, isVision);
+        case 'gemini':
+            return callGemini(endpoint, apiKey, prompt, model, temperature, max_tokens, onChunk, onComplete, onError, signal, isVision);
+        case 'anthropic':
+            return callAnthropic(endpoint, apiKey, prompt, model, temperature, max_tokens, onChunk, onComplete, onError, signal, isVision);
+        case 'azure':
+            return callAzureOpenAI(endpoint, apiKey, azureApiVersion, model, prompt, temperature, max_tokens, onChunk, onComplete, onError, signal, isVision);
+        default:
+            throw new Error(`不支持的 AI 提供商: ${provider}`);
+    }
+}
+class ThinkingHandler {
+    constructor(container, options = {}) {
+        this.container = container;
+        this.autoScrollEnabled = options.autoScrollEnabled === true;
+        this.thinkingProcessDiv = null;
+        this.timelineContainer = null;
+        this.detailsElement = null;
+        this._steps = [];
+        this._currentStepIndex = -1;
+        this._buffer = "";
+        this.isUserScrolledUp = false;
+        this._isFirstChunk = true;
+    }
+    _ensureUi() {
+        if (!this.container) return false;
+        if (!this.thinkingProcessDiv || !this.container.contains(this.thinkingProcessDiv)) {
+            this.thinkingProcessDiv = this.container.querySelector('.ai-thinking-process');
+            if (!this.thinkingProcessDiv) {
+                this.thinkingProcessDiv = document.createElement('div');
+                this.thinkingProcessDiv.className = 'ai-thinking-process';
+                this.thinkingProcessDiv.style.marginTop = '15px';
+                this.thinkingProcessDiv.style.display = 'none';
+                this.container.appendChild(this.thinkingProcessDiv);
+            }
+            this.detailsElement = this.thinkingProcessDiv.querySelector('details');
+            if (!this.detailsElement) {
+                this.thinkingProcessDiv.innerHTML = `
                     <details style="margin-top: 15px; border: 1px solid #e5e7eb; border-radius: 8px; background: #f9fafb;">
                         <summary style="padding: 8px 12px; cursor: pointer; font-weight: 600; color: #4b5569; font-size: 13px; list-style: none; display: flex; align-items: center;">
                             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right: 6px; transition: transform 0.2s;"><path d="M9 18l6-6-6-6"/></svg>
@@ -5487,160 +5576,160 @@
             }
         }
     }
-    class StreamProcessor {
-        constructor(targetElement, questionTypeNum, thinkingHandler, onUpdateTarget, onFinalizeTarget) {
-            this.targetElement = targetElement;
-            this.questionTypeNum = questionTypeNum;
-            this.thinkingHandler = thinkingHandler;
-            this.onUpdateTarget = onUpdateTarget;
-            this.onFinalizeTarget = onFinalizeTarget;
-            this.buffer = '';
-            this.isThinking = false;
-            this.currentMainContent = '';
-            this.currentThinkingContent = '';
-            this.thinkStartTag = '<think>';
-            this.thinkEndTag = '</think>';
-        }
-        processChunk(delta) {
-            if (!delta) return;
-            this.buffer += delta;
-            let thinkStartIndex, thinkEndIndex;
-            while (this.buffer.length > 0) {
-                if (!this.isThinking) {
-                    thinkStartIndex = this.buffer.indexOf(this.thinkStartTag);
-                    if (thinkStartIndex !== -1) {
-                        const beforeThink = this.buffer.substring(0, thinkStartIndex);
-                        this.currentMainContent += beforeThink;
-                        if (typeof this.onUpdateTarget === 'function') {
-                            this.onUpdateTarget(beforeThink);
-                        }
-                        this.isThinking = true;
-                        this.buffer = this.buffer.substring(thinkStartIndex + this.thinkStartTag.length);
-                    } else {
-                        this.currentMainContent += this.buffer;
-                        if (typeof this.onUpdateTarget === 'function') {
-                            this.onUpdateTarget(this.buffer);
-                        }
-                        this.buffer = '';
-                        break;
+class StreamProcessor {
+    constructor(targetElement, questionTypeNum, thinkingHandler, onUpdateTarget, onFinalizeTarget) {
+        this.targetElement = targetElement;
+        this.questionTypeNum = questionTypeNum;
+        this.thinkingHandler = thinkingHandler;
+        this.onUpdateTarget = onUpdateTarget;
+        this.onFinalizeTarget = onFinalizeTarget;
+        this.buffer = '';
+        this.isThinking = false;
+        this.currentMainContent = '';
+        this.currentThinkingContent = '';
+        this.thinkStartTag = '<think>';
+        this.thinkEndTag = '</think>';
+    }
+    processChunk(delta) {
+        if (!delta) return;
+        this.buffer += delta;
+        let thinkStartIndex, thinkEndIndex;
+        while (this.buffer.length > 0) {
+            if (!this.isThinking) {
+                thinkStartIndex = this.buffer.indexOf(this.thinkStartTag);
+                if (thinkStartIndex !== -1) {
+                    const beforeThink = this.buffer.substring(0, thinkStartIndex);
+                    this.currentMainContent += beforeThink;
+                    if (typeof this.onUpdateTarget === 'function') {
+                        this.onUpdateTarget(beforeThink);
                     }
-                } else {
-                    thinkEndIndex = this.buffer.indexOf(this.thinkEndTag);
-                    if (thinkEndIndex !== -1) {
-                        const thinkingPart = this.buffer.substring(0, thinkEndIndex);
-                        this.currentThinkingContent += thinkingPart;
-                        this.thinkingHandler.addContent(thinkingPart);
-                        this.isThinking = false;
-                        this.buffer = this.buffer.substring(thinkEndIndex + this.thinkEndTag.length);
-                    } else {
-                        this.currentThinkingContent += this.buffer;
-                        this.thinkingHandler.addContent(this.buffer);
-                        this.buffer = '';
-                        break;
-                    }
-                }
-            }
-        }
-        processComplete() {
-            console.log("StreamProcessor 流式处理已完成。");
-            if (this.buffer) {
-                if (this.isThinking) {
-                    this.currentThinkingContent += this.buffer;
-                    this.thinkingHandler.update(this.buffer);
+                    this.isThinking = true;
+                    this.buffer = this.buffer.substring(thinkStartIndex + this.thinkStartTag.length);
                 } else {
                     this.currentMainContent += this.buffer;
                     if (typeof this.onUpdateTarget === 'function') {
-                        if (this.questionTypeNum !== 4) this.onUpdateTarget(this.buffer);
+                        this.onUpdateTarget(this.buffer);
                     }
+                    this.buffer = '';
+                    break;
                 }
-                this.buffer = '';
+            } else {
+                thinkEndIndex = this.buffer.indexOf(this.thinkEndTag);
+                if (thinkEndIndex !== -1) {
+                    const thinkingPart = this.buffer.substring(0, thinkEndIndex);
+                    this.currentThinkingContent += thinkingPart;
+                    this.thinkingHandler.addContent(thinkingPart);
+                    this.isThinking = false;
+                    this.buffer = this.buffer.substring(thinkEndIndex + this.thinkEndTag.length);
+                } else {
+                    this.currentThinkingContent += this.buffer;
+                    this.thinkingHandler.addContent(this.buffer);
+                    this.buffer = '';
+                    break;
+                }
             }
-            this.thinkingHandler.finalize();
-            if (!this.currentThinkingContent.trim()) {
-                this.thinkingHandler.hide();
-            }
-            return {
-                mainContent: this.currentMainContent,
-                thinkingContent: this.currentThinkingContent
-            };
         }
-        reset() {
+    }
+    processComplete() {
+        console.log("StreamProcessor 流式处理已完成。");
+        if (this.buffer) {
+            if (this.isThinking) {
+                this.currentThinkingContent += this.buffer;
+                this.thinkingHandler.update(this.buffer);
+            } else {
+                this.currentMainContent += this.buffer;
+                if (typeof this.onUpdateTarget === 'function') {
+                    if (this.questionTypeNum !== 4) this.onUpdateTarget(this.buffer);
+                }
+            }
             this.buffer = '';
-            this.isThinking = false;
-            this.currentMainContent = '';
-            this.currentThinkingContent = '';
-            this.thinkingHandler.reset();
         }
-    }
-    function isEmptyRichText(content) {
-        try {
-            let jsonContent = JSON.parse(content);
-            if (jsonContent.blocks.length === 1 &&
-                jsonContent.blocks[0].text === "" &&
-                Object.keys(jsonContent.entityMap).length === 0) {
-                return true;
-            }
-            return false;
-        } catch (e) {
-            return false;
+        this.thinkingHandler.finalize();
+        if (!this.currentThinkingContent.trim()) {
+            this.thinkingHandler.hide();
         }
+        return {
+            mainContent: this.currentMainContent,
+            thinkingContent: this.currentThinkingContent
+        };
     }
-    async function uploadImage(file) {
-        try {
-            const token = getToken();
-            if (!token) {
-                throw new Error('无法获取授权，请确保已登录');
-            }
-            const uploadId = `rc-upload-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
-            const credentialResponse = await fetch(`${window.location.origin}/api/jx-oresource/disk/files`, {
-                method: 'POST',
-                headers: {
-                    "accept": "*/*",
-                    "authorization": `Bearer ${token}`,
-                    "content-type": "application/json; charset=UTF-8"
-                },
-                body: JSON.stringify({
-                    uploadId: uploadId,
-                    filename: file.name,
-                    file_size: file.size
-                })
-            });
-            const credentialData = await credentialResponse.json();
-            if (!credentialData.success || !credentialData.data) {
-                console.error('上传凭证数据不完整:', credentialData);
-                throw new Error(credentialData.message || '获取上传凭证失败，返回的数据结构不完整');
-            }
-            const formData = new FormData();
-            formData.append('key', credentialData.data.multipart.key);
-            for (const key in credentialData.data.multipart) {
-                if (key !== 'key') {
-                    formData.append(key, credentialData.data.multipart[key]);
-                }
-            }
-            formData.append('file', file);
-            console.log('上传地址:', credentialData.data.host);
-            console.log('表单数据:', Object.keys(credentialData.data.multipart));
-            const uploadResponse = await fetch(credentialData.data.host, {
-                method: 'POST',
-                body: formData
-            });
-            if (!uploadResponse.ok) {
-                const errorText = await uploadResponse.text();
-                console.error('上传失败响应:', errorText);
-                throw new Error(`文件上传失败，状态码: ${uploadResponse.status}, 错误信息: ${errorText}`);
-            }
-            if (!credentialData.data.multipart.id) {
-                console.error('缺少文件ID:', credentialData);
-                throw new Error('上传成功但缺少文件ID');
-            }
-            return `${window.location.origin}/api/jx-oresource/cloud/file_access/${credentialData.data.multipart.id}`;
-        } catch (error) {
-            console.error('上传图片失败:', error);
-            throw error;
+    reset() {
+        this.buffer = '';
+        this.isThinking = false;
+        this.currentMainContent = '';
+        this.currentThinkingContent = '';
+        this.thinkingHandler.reset();
+    }
+}
+function isEmptyRichText(content) {
+    try {
+        let jsonContent = JSON.parse(content);
+        if (jsonContent.blocks.length === 1 &&
+            jsonContent.blocks[0].text === "" &&
+            Object.keys(jsonContent.entityMap).length === 0) {
+            return true;
         }
+        return false;
+    } catch (e) {
+        return false;
     }
-    function insertImageToEditor(editor, imageUrl) {
-        const imgElement = `
+}
+async function uploadImage(file) {
+    try {
+        const token = getToken();
+        if (!token) {
+            throw new Error('无法获取授权，请确保已登录');
+        }
+        const uploadId = `rc-upload-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+        const credentialResponse = await fetch(`${window.location.origin}/api/jx-oresource/disk/files`, {
+            method: 'POST',
+            headers: {
+                "accept": "*/*",
+                "authorization": `Bearer ${token}`,
+                "content-type": "application/json; charset=UTF-8"
+            },
+            body: JSON.stringify({
+                uploadId: uploadId,
+                filename: file.name,
+                file_size: file.size
+            })
+        });
+        const credentialData = await credentialResponse.json();
+        if (!credentialData.success || !credentialData.data) {
+            console.error('上传凭证数据不完整:', credentialData);
+            throw new Error(credentialData.message || '获取上传凭证失败，返回的数据结构不完整');
+        }
+        const formData = new FormData();
+        formData.append('key', credentialData.data.multipart.key);
+        for (const key in credentialData.data.multipart) {
+            if (key !== 'key') {
+                formData.append(key, credentialData.data.multipart[key]);
+            }
+        }
+        formData.append('file', file);
+        console.log('上传地址:', credentialData.data.host);
+        console.log('表单数据:', Object.keys(credentialData.data.multipart));
+        const uploadResponse = await fetch(credentialData.data.host, {
+            method: 'POST',
+            body: formData
+        });
+        if (!uploadResponse.ok) {
+            const errorText = await uploadResponse.text();
+            console.error('上传失败响应:', errorText);
+            throw new Error(`文件上传失败，状态码: ${uploadResponse.status}, 错误信息: ${errorText}`);
+        }
+        if (!credentialData.data.multipart.id) {
+            console.error('缺少文件ID:', credentialData);
+            throw new Error('上传成功但缺少文件ID');
+        }
+        return `${window.location.origin}/api/jx-oresource/cloud/file_access/${credentialData.data.multipart.id}`;
+    } catch (error) {
+        console.error('上传图片失败:', error);
+        throw error;
+    }
+}
+function insertImageToEditor(editor, imageUrl) {
+    const imgElement = `
             <div style="margin: 10px 0;">
                 <img src="${imageUrl}"
                     alt="上传图片"
@@ -5679,511 +5768,511 @@
         }
         editor.innerHTML += imgElement;
     }
-    function updateAnswerWithContent(question, htmlContent) {
-        const tempDiv = document.createElement('div');
-        tempDiv.innerHTML = htmlContent;
-        const blocks = [];
-        let currentTextBlock = "";
-        let blockKey = 0;
-        function processNodes() {
-            const allNodes = [];
-            const walkNodes = (node, isRoot = false) => {
-                if (node.nodeType === Node.TEXT_NODE && node.textContent.trim() !== '') {
-                    allNodes.push({ type: 'text', node: node });
-                } else if (node.nodeType === Node.ELEMENT_NODE) {
-                    if (node.nodeName === 'IMG') {
-                        allNodes.push({ type: 'image', node: node });
-                    } else if (node.nodeName === 'BR') {
+function updateAnswerWithContent(question, htmlContent) {
+    const tempDiv = document.createElement('div');
+    tempDiv.innerHTML = htmlContent;
+    const blocks = [];
+    let currentTextBlock = "";
+    let blockKey = 0;
+    function processNodes() {
+        const allNodes = [];
+        const walkNodes = (node, isRoot = false) => {
+            if (node.nodeType === Node.TEXT_NODE && node.textContent.trim() !== '') {
+                allNodes.push({ type: 'text', node: node });
+            } else if (node.nodeType === Node.ELEMENT_NODE) {
+                if (node.nodeName === 'IMG') {
+                    allNodes.push({ type: 'image', node: node });
+                } else if (node.nodeName === 'BR') {
+                    allNodes.push({ type: 'linebreak' });
+                } else if (!isRoot && (node.nodeName === 'DIV' || node.style.display === 'block')) {
+                    const childNodes = Array.from(node.childNodes);
+                    childNodes.forEach(child => walkNodes(child));
+                    if (node.nextSibling) {
                         allNodes.push({ type: 'linebreak' });
-                    } else if (!isRoot && (node.nodeName === 'DIV' || node.style.display === 'block')) {
-                        const childNodes = Array.from(node.childNodes);
-                        childNodes.forEach(child => walkNodes(child));
-                        if (node.nextSibling) {
-                            allNodes.push({ type: 'linebreak' });
-                        }
-                    } else {
-                        Array.from(node.childNodes).forEach(child => walkNodes(child));
                     }
+                } else {
+                    Array.from(node.childNodes).forEach(child => walkNodes(child));
                 }
-            };
-            walkNodes(tempDiv, true);
-            return allNodes;
-        }
-        const nodes = processNodes();
-        for (let i = 0; i < nodes.length; i++) {
-            const nodeInfo = nodes[i];
-            if (nodeInfo.type === 'text') {
-                currentTextBlock += nodeInfo.node.textContent;
-            } else if (nodeInfo.type === 'linebreak') {
-                if (i < nodes.length - 1) {
-                    currentTextBlock += '\n';
-                }
-            } else if (nodeInfo.type === 'image') {
-                if (currentTextBlock) {
+            }
+        };
+        walkNodes(tempDiv, true);
+        return allNodes;
+    }
+    const nodes = processNodes();
+    for (let i = 0; i < nodes.length; i++) {
+        const nodeInfo = nodes[i];
+        if (nodeInfo.type === 'text') {
+            currentTextBlock += nodeInfo.node.textContent;
+        } else if (nodeInfo.type === 'linebreak') {
+            if (i < nodes.length - 1) {
+                currentTextBlock += '\n';
+            }
+        } else if (nodeInfo.type === 'image') {
+            if (currentTextBlock) {
+                blocks.push({
+                    key: `block${blockKey++}`,
+                    text: currentTextBlock,
+                    type: 'unstyled',
+                    depth: 0,
+                    inlineStyleRanges: [],
+                    entityRanges: [],
+                    data: {}
+                });
+                currentTextBlock = "";
+            }
+            const img = nodeInfo.node;
+            if (img && img.src) {
+                const fileIdMatch = img.src.match(/\/cloud\/file_access\/(\d+)/);
+                if (fileIdMatch && fileIdMatch[1]) {
                     blocks.push({
                         key: `block${blockKey++}`,
-                        text: currentTextBlock,
-                        type: 'unstyled',
+                        text: "",
+                        type: "atomic",
                         depth: 0,
                         inlineStyleRanges: [],
                         entityRanges: [],
-                        data: {}
-                    });
-                    currentTextBlock = "";
-                }
-                const img = nodeInfo.node;
-                if (img && img.src) {
-                    const fileIdMatch = img.src.match(/\/cloud\/file_access\/(\d+)/);
-                    if (fileIdMatch && fileIdMatch[1]) {
-                        blocks.push({
-                            key: `block${blockKey++}`,
-                            text: "",
-                            type: "atomic",
-                            depth: 0,
-                            inlineStyleRanges: [],
-                            entityRanges: [],
-                            data: {
-                                type: "IMAGE",
-                                src: `${window.location.origin}/api/jx-oresource/cloud/file_access/${fileIdMatch[1]}`
+                        data: {
+                            type: "IMAGE",
+                            src: `${window.location.origin}/api/jx-oresource/cloud/file_access/${fileIdMatch[1]}`
                             }
-                        });
-                    }
+                    });
                 }
             }
         }
-        if (currentTextBlock) {
-            blocks.push({
-                key: `block${blockKey++}`,
-                text: currentTextBlock,
-                type: 'unstyled',
-                depth: 0,
-                inlineStyleRanges: [],
-                entityRanges: [],
-                data: {}
-            });
-        }
-        if (blocks.length === 0) {
-            blocks.push({
-                key: 'empty',
-                text: '',
-                type: 'unstyled',
-                depth: 0,
-                inlineStyleRanges: [],
-                entityRanges: [],
-                data: {}
-            });
-        }
-        const richTextContent = {
-            blocks: blocks,
-            entityMap: {}
-        };
-        question.answer_items[0].answer = JSON.stringify(richTextContent);
     }
-    async function buildMultimodalPrompt(provider, question, promptTemplate, customPrompts, currentAnswerContent, extraText = '', paperDescription = null, temporaryPrompt = '', imageDescriptions = '', extraImages = []) {
-        const questionTypeNum = question.type;
-        let multimodalContent = [];
-        let combinedExtraText = '';
-        if (extraText) {
-            combinedExtraText += `\n\n【听力原文】:\n${extraText}`;
-        }
-        if (imageDescriptions) {
-            combinedExtraText += `\n\n【图片内容描述】:\n${imageDescriptions}`;
-        }
-        if (temporaryPrompt || extraImages.length > 0) {
-            multimodalContent.push({ type: 'text', text: `【临时指令与补充材料】:\n` });
-            if (temporaryPrompt) {
-                multimodalContent.push({ type: 'text', text: temporaryPrompt });
-            }
-            if (extraImages.length > 0) {
-                multimodalContent.push(...extraImages);
-            }
-            multimodalContent.push({ type: 'text', text: '\n\n---\n\n' });
-        }
-        if (paperDescription) {
-            multimodalContent.push({ type: 'text', text: '【作业说明及公共材料】:\n' });
-            multimodalContent.push(...await parseRichTextToMultimodalContent(paperDescription));
-            multimodalContent.push({ type: 'text', text: '\n\n---\n\n' });
-        }
-        const placeholderRegex = /(\{questionTitle\}|\{optionsText\}|\{stemsText\}|\{answerContent\})/g;
-        const templateParts = promptTemplate.split(placeholderRegex);
-        const parseToStandardFormat = async (richText) => {
-            return await parseRichTextToMultimodalContent(richText);
-        };
-        for (const part of templateParts) {
-            switch (part) {
-                case '{questionTitle}':
-                    if (question.parentQuestion && question.parentQuestion.title) {
-                        multimodalContent.push(...await parseToStandardFormat(question.parentQuestion.title));
-                        multimodalContent.push({ type: 'text', text: '\n\n--- (子题目) ---\n\n' });
-                    }
-                    multimodalContent.push(...await parseToStandardFormat(question.title));
-                    break;
-                case '{optionsText}':
-                    if ([1, 2, 5, 12].includes(questionTypeNum)) {
-                        for (const [idx, item] of question.answer_items.entries()) {
-                            const letter = String.fromCharCode(65 + idx);
-                            const prefix = questionTypeNum === 5 ? (idx === 0 ? '正确' : '错误') : '';
-                            multimodalContent.push({ type: 'text', text: `\n${letter}. ${prefix}` });
-                            if (questionTypeNum !== 5) {
-                                multimodalContent.push(...await parseToStandardFormat(item.value));
-                            }
-                        }
-                    } else if (questionTypeNum === 13) {
-                        const rightItems = question.answer_items.filter(item => item.is_target_opt);
-                        for (const [idx, item] of rightItems.entries()) {
-                            const letter = String.fromCharCode(97 + idx);
-                            multimodalContent.push({ type: 'text', text: `\n${letter}. ` });
-                            multimodalContent.push(...await parseToStandardFormat(item.value));
-                        }
-                    }
-                    break;
-                case '{stemsText}':
-                    if (questionTypeNum === 13) {
-                        const leftItems = question.answer_items.filter(item => !item.is_target_opt);
-                        for (const [idx, item] of leftItems.entries()) {
-                            const letter = String.fromCharCode(65 + idx);
-                            multimodalContent.push({ type: 'text', text: `\n${letter}. ` });
-                            multimodalContent.push(...await parseToStandardFormat(item.value));
-                        }
-                    }
-                    break;
-                case '{answerContent}':
-                    if ([4, 6, 10].includes(questionTypeNum)) {
-                        const content = currentAnswerContent !== null ? currentAnswerContent : parseRichTextToPlainText(question.answer_items[0]?.answer || '');
-                        multimodalContent.push({ type: 'text', text: content });
-                    }
-                    break;
-                default:
-                    if (part) {
-                        let textPart = part;
-                        textPart = textPart.replace('{questionType}', getQuestionType(question.type));
-                        if (question.type === 10) {
-                            const progSetting = question.program_setting || {};
-                            textPart = textPart.replace('{language}', progSetting.language?.join(', ') || '未指定');
-                            textPart = textPart.replace('{max_time}', progSetting.max_time || 'N/A');
-                            textPart = textPart.replace('{max_memory}', progSetting.max_memory || 'N/A');
-                        }
-                        multimodalContent.push({ type: 'text', text: textPart });
-                    }
-            }
-        }
-        if (combinedExtraText) {
-            multimodalContent.push({ type: 'text', text: combinedExtraText });
-        }
-        const mergedContent = [];
-        let textBuffer = '';
-        for (const item of multimodalContent) {
-            if (item.type === 'text') {
-                textBuffer += item.text;
-            } else {
-                if (textBuffer) {
-                    mergedContent.push({ type: 'text', text: textBuffer });
-                    textBuffer = '';
-                }
-                mergedContent.push(item);
-            }
-        }
-        if (textBuffer) {
-            mergedContent.push({ type: 'text', text: textBuffer });
-        }
-        return mergedContent;
-    }
-    async function _getAIAnswer(question, aiConfig, customPrompts, temporaryPrompt = '', currentAnswerContent = null, onChunk = null, onComplete = null, signal = null, notificationId = null) {
-        if (signal?.aborted) {
-            return Promise.resolve({ cancelled: true });
-        }
-        let temporaryImages = [];
-        if (aiConfig.visionEnabled) {
-            const previewContainer = document.getElementById('temp-prompt-image-preview');
-            if (previewContainer) {
-                previewContainer.querySelectorAll('img').forEach(img => {
-                    if (img.dataset.base64) {
-                        temporaryImages.push({ type: 'image_url', image_url: { url: img.dataset.base64 } });
-                    }
-                });
-            }
-        }
-        const questionTypeNum = question.type;
-        const questionType = getQuestionType(questionTypeNum);
-        const typeCodeStr = String(questionTypeNum);
-        let promptTemplate = customPrompts[typeCodeStr] || defaultPrompts[typeCodeStr];
-        if (!promptTemplate) {
-            console.warn(`未找到题型 ${questionTypeNum} (${questionType}) 的 Prompt 模板！将跳过此题。`);
-            return Promise.resolve({ skipped: true, reason: `不支持的题型 (${questionType})` });
-        }
-        const paperDescription = localStorage.getItem('paperDescription');
-        const questionIdForLog = question.parentQuestion ?
-            `${question.parentQuestion.id} (子问题: ${question.id})` :
-            question.id;
-        const videoCheckEnabled = aiConfig.sttVideoEnabled !== false;
-        const MEDIA_PROCESS_ID = notificationId || `media-process-${question.id}`
-        const hasVideoInSelf = containsVideo(question.title);
-        const hasVideoInParent = question.parentQuestion && containsVideo(question.parentQuestion.title);
-        const hasVideoInPaper = paperDescription && containsVideo(paperDescription);
-        const hasVideo = hasVideoInSelf || hasVideoInParent || hasVideoInPaper;
-        const hasAudioInSelf = containsAudio(question.title);
-        const hasAudioInParent = question.parentQuestion && containsAudio(question.parentQuestion.title);
-        const hasAudioInPaper = paperDescription && containsAudio(paperDescription);
-        const hasAudio = hasAudioInSelf || hasAudioInParent || hasAudioInPaper;
-        let transcriptionText = '';
-        let imageDescriptions = '';
-        let mediaDataForPrompt = [];
-        const audioProcessingMode = aiConfig.audioProcessingMode || 'main_model';
-        const mainProvider = aiConfig.provider;
-        const analyzeVideoFrames = aiConfig.geminiAnalyzeVideoFramesEnabled || false;
-        const mainModelSupportsAudio = mainProvider === 'gemini';
-        if ((hasAudio || hasVideo) && audioProcessingMode === 'main_model' && mainModelSupportsAudio) {
-            console.log(`[多模态处理] 题 ${question.id}: 检测到媒体，使用主AI模型(${mainProvider})直接处理。通知ID: ${MEDIA_PROCESS_ID}`);
-            showNotification('🎤 正在准备媒体文件...', { type: 'info', duration: 0, id: MEDIA_PROCESS_ID });
-            try {
-                const allMediaBlocks = [];
-                const sources = [paperDescription, question.parentQuestion?.title, question.title].filter(Boolean);
-                sources.forEach(source => {
-                    try {
-                        const jsonContent = JSON.parse(source);
-                        jsonContent.blocks.forEach(b => {
-                            if (b.type === 'atomic' && b.data && (b.data.type === 'VIDEO' || b.data.type === 'AUDIO')) {
-                                allMediaBlocks.push(b);
-                            }
-                        });
-                    } catch (e) {
-                        console.warn('[Gemini视频理解] 解析视频富文本失败:', e);
-                        showNotification('视频内容解析失败，无法识别视频块', { type: 'error', id: 'video-process' });
-                    }
-                });
-                if (allMediaBlocks.length > 0) {
-                    for (const mediaBlock of allMediaBlocks) {
-                        const mediaType = mediaBlock.data.type;
-                        const mediaId = (mediaType === 'AUDIO') ? mediaBlock.data.data.quote_id : mediaBlock.data.data.video_id;
-                        if (!mediaId) continue;
-                        if (videoCache[mediaId]) {
-                            mediaDataForPrompt.push(videoCache[mediaId]);
-                            continue;
-                        }
-                        if (videoProcessingLocks[mediaId]) {
-                            mediaDataForPrompt.push(await videoProcessingLocks[mediaId]);
-                            continue;
-                        }
-                        const processingPromise = (async () => {
-                            try {
-                                const progressCallback = (progress) => {
-                                    const percentage = (progress * 100).toFixed(0);
-                                    showNotification(`📹 正在下载媒体文件... (${percentage}%)`, { type: 'info', duration: 0, id: MEDIA_PROCESS_ID });
-                                };
-                                if (mediaType === 'VIDEO') {
-                                    const urls = await getVideoUrl(mediaId);
-                                    if (!urls || !urls.videoUrl) throw new Error(`无法获取视频URL for ID ${mediaId}`);
-                                    if (analyzeVideoFrames) {
-                                        showNotification('📹 正在下载并准备视频文件以供画面分析...', { type: 'info', duration: 0, id: MEDIA_PROCESS_ID });
-                                        const videoContent = await videoToBase64(urls.videoUrl, 'video/mp4', progressCallback);
-                                        if (!videoContent) throw new Error('视频转Base64失败');
-                                        return { type: 'video_data', video_data: videoContent };
-                                    } else {
-                                        showNotification('🎵 正在从视频中提取音轨...', { type: 'info', duration: 0, id: MEDIA_PROCESS_ID });
-                                        const audioBlob = await extractAndEncodeAudio(urls.videoUrl, (progress, stage) => {
-                                            const message = `🎵 提取音轨: ${stage}...(${(progress * 100).toFixed(0)}%)`;
-                                            showNotification(message, { id: MEDIA_PROCESS_ID, type: 'info', duration: 0 });
-                                        });
-                                        if (!audioBlob) throw new Error('从视频提取音轨失败');
-                                        const base64Audio = await new Promise((resolve, reject) => {
-                                            const reader = new FileReader();
-                                            reader.onloadend = () => resolve(reader.result.split(',')[1]);
-                                            reader.onerror = reject;
-                                            reader.readAsDataURL(audioBlob);
-                                        });
-                                        return { type: 'video_data', video_data: { base64: base64Audio, mimeType: 'audio/wav' } };
-                                    }
-                                } else {
-                                    const audioUrl = await getAudioUrl(mediaId);
-                                    if (!audioUrl) throw new Error(`无法获取音频URL for ID ${mediaId}`);
-                                    const audioMimeType = audioUrl.includes('.mp3') ? 'audio/mp3' : (audioUrl.includes('.wav') ? 'audio/wav' : 'audio/mpeg');
-                                    const audioContent = await videoToBase64(audioUrl, audioMimeType, progressCallback);
-                                    if (!audioContent) throw new Error('音频转Base64失败');
-                                    return { type: 'video_data', video_data: audioContent };
-                                }
-                            } finally {
-                                delete videoProcessingLocks[mediaId];
-                            }
-                        })();
-                        videoProcessingLocks[mediaId] = processingPromise;
-                        const result = await processingPromise;
-                        videoCache[mediaId] = result;
-                        mediaDataForPrompt.push(result);
-                    }
-                    promptTemplate = `你是一个多模态AI助手。请结合提供的【媒体文件】（可能是音频或视频）和【文本问题】来生成答案。\n\n${promptTemplate}`;
-                    showNotification('🎤 媒体文件已准备好，提交给AI...', { type: 'success', duration: 2000, id: MEDIA_PROCESS_ID });
-                } else {
-                    showNotification('未找到有效媒体文件。', { type: 'warning', duration: 2000, id: MEDIA_PROCESS_ID });
-                }
-            } catch (error) {
-                console.error(`[多模态处理] 失败: ${error.message}`);
-                showNotification(`媒体处理失败: ${error.message}`, { type: 'error', duration: 5000, id: MEDIA_PROCESS_ID });
-                transcriptionText = "[媒体处理失败，无法直接分析]";
-            }
-        } else if ((hasAudio || (hasVideo && videoCheckEnabled)) && aiConfig.sttEnabled) {
-            const STT_PROGRESS_ID = notificationId || `stt-progress-${question.id}`;
-            console.log(`[STT流程] 题 ${question.id}: 使用独立STT服务处理媒体。通知ID: ${STT_PROGRESS_ID}`);
-            try {
-                let allMediaBlocks = [];
-                const addedMediaIds = new Set();
-                const collectMediaBlocks = (richText) => {
-                    if (!richText) return;
-                    try {
-                        const jsonContent = JSON.parse(richText);
-                        const mediaBlocks = jsonContent.blocks.filter(block =>
-                            block.type === 'atomic' && block.data && (block.data.type === 'AUDIO' || (block.data.type === 'VIDEO' && videoCheckEnabled))
-                        );
-                        mediaBlocks.forEach(block => {
-                            const mediaType = block.data.type;
-                            const mediaId = (mediaType === 'AUDIO') ? block.data.data?.quote_id : block.data.data?.video_id;
-                            if (mediaId && !addedMediaIds.has(mediaId)) {
-                                allMediaBlocks.push(block);
-                                addedMediaIds.add(mediaId);
-                            }
-                        });
-                    } catch (e) { console.error('解析富文本失败:', e, richText); }
-                };
-                if (hasAudioInPaper || hasVideoInPaper) collectMediaBlocks(paperDescription);
-                if (hasAudioInParent || hasVideoInParent) collectMediaBlocks(question.parentQuestion.title);
-                if (hasAudioInSelf || hasVideoInSelf) collectMediaBlocks(question.title);
-                if (allMediaBlocks.length > 0) {
-                    const transcriptionPromises = allMediaBlocks.map(async (mediaBlock, mapIndex) => {
-                        const mediaType = mediaBlock.data.type;
-                        const mediaId = (mediaType === 'AUDIO') ? mediaBlock.data.data.quote_id : mediaBlock.data.data.video_id;
-                        const cacheKey = `${mediaType.toLowerCase()}_transcription_${mediaId}`;
-                        if (sttCache[cacheKey]) {
-                            console.log(`[STT Cache] HIT for ${mediaType}: ${mediaId}`);
-                            return sttCache[cacheKey];
-                        }
-                        if (mediaProcessingLocks[mediaId]) {
-                            console.log(`[STT Lock] 题 ${questionIdForLog}: 媒体 ${mediaId} 正在被其他任务处理，等待结果...`);
-                            return await mediaProcessingLocks[mediaId];
-                        }
-                        const processingPromise = (async () => {
-                            try {
-                                let mediaSource;
-                                if (mediaType === 'AUDIO') {
-                                    mediaSource = await getAudioUrl(mediaId);
-                                } else {
-                                    const urls = await getVideoUrl(mediaId);
-                                    if (!urls || !urls.videoUrl) throw new Error(`无法获取Video ID ${mediaId}的播放地址`);
-                                    const progressCallback = (progress, stage) => {
-                                        const message = `🎬 [${mapIndex + 1}/${allMediaBlocks.length}] 提取视频音轨: ${stage}...(${(progress * 100).toFixed(0)}%)`;
-                                        showNotification(message, { id: STT_PROGRESS_ID, type: 'info', duration: 0 });
-                                    };
-                                    mediaSource = await extractAndEncodeAudio(urls.videoUrl, progressCallback);
-                                }
-                                if (!mediaSource) throw new Error(`无法获取 ${mediaType} ID ${mediaId} 的媒体源`);
-                                if (!signal?.aborted) {
-                                    showNotification(`☁️ [${mapIndex + 1}/${allMediaBlocks.length}] 上传转录 ${mediaType}...`, { id: STT_PROGRESS_ID, type: 'info', duration: 0 });
-                                    const transcription = await callSttApi(mediaSource, aiConfig);
-                                    sttCache[cacheKey] = transcription;
-                                    return transcription;
-                                }
-                                return `[${mediaType}转录取消]`;
-                            } catch (err) {
-                                console.error(`[STT Worker] 媒体 ${mediaId} 处理失败:`, err);
-                                throw err;
-                            } finally {
-                                delete mediaProcessingLocks[mediaId];
-                            }
-                        })();
-                        mediaProcessingLocks[mediaId] = processingPromise;
-                        return await processingPromise;
-                    });
-                    const allTranscriptions = await Promise.all(transcriptionPromises);
-                    showNotification('媒体处理完成', { id: STT_PROGRESS_ID, type: 'success', duration: 500 });
-                    if (allTranscriptions.length === 1) {
-                        transcriptionText = allTranscriptions[0];
-                    } else {
-                        transcriptionText = allTranscriptions
-                            .map((text, i) => `【媒体内容 ${i + 1}】:\n${text}`)
-                            .join('\n\n---\n\n');
-                    }
-                    console.log('[STT流程] 所有媒体处理完成，合并后的文本:', transcriptionText);
-                } else {
-                    console.warn(`[STT流程] 标记为有媒体但未找到有效的媒体块。`);
-                }
-            } catch (error) {
-                showNotification(`媒体处理失败`, { id: STT_PROGRESS_ID, type: 'error', duration: 3000 });
-                console.error(`[STT流程] 为题目 ${questionIdForLog} 处理媒体时发生严重错误: ${error.message}`);
-                showNotification(`处理媒体失败，将仅使用题目文本进行AI辅助。`, { type: 'warning' });
-                transcriptionText = "[语音/视频转录失败]";
-            }
-        }
-        let finalPrompt;
-        let effectiveConfig = { ...aiConfig };
-        let effectiveProvider = aiConfig.provider;
-        const allContentSources = [question.title, paperDescription, question.parentQuestion?.title].filter(Boolean);
-        if (question.answer_items) {
-            question.answer_items.forEach(item => allContentSources.push(item.value));
-        }
-        const hasImagesInContent = allContentSources.some(source => /"type":"IMAGE"/.test(source));
-        const hasImages = hasImagesInContent || temporaryImages.length > 0;
-        if (mediaDataForPrompt.length > 0) {
-            finalPrompt = await buildMultimodalPrompt(effectiveProvider, question, promptTemplate, customPrompts, currentAnswerContent, '', paperDescription, temporaryPrompt, '', temporaryImages);
-            finalPrompt.unshift(...mediaDataForPrompt);
-        } else if (hasImages && aiConfig.visionEnabled) {
-            if (aiConfig.visionProvider && aiConfig.visionProvider !== 'main_model') {
-                console.log(`[AI流程] 检测到图片，使用独立的视觉模型: ${aiConfig.visionProvider}`);
-                showNotification('👁️ 正在调用独立视觉模型...', { type: 'info' });
-                const visionConfig = {
-                    provider: aiConfig.visionProvider,
-                    endpoint: aiConfig.visionEndpoint,
-                    apiKey: aiConfig.visionApiKey,
-                    model: aiConfig.visionModel
-                };
-                const allImages = [...temporaryImages];
-                for (const source of allContentSources) {
-                    const parsedContent = await parseRichTextToMultimodalContent(source);
-                    parsedContent.forEach(part => {
-                        if (part.type === 'image_url') {
-                            if (!allImages.some(img => img.image_url.url.substring(0, 50) === part.image_url.url.substring(0, 50))) {
-                                allImages.push(part);
-                            }
-                        }
-                    });
-                }
-                console.log(`[AI流程] 共找到 ${allImages.length} 张图片送往视觉模型处理。`);
-                const visionPromptText = "你将收到多张图片。请按顺序为每一张图片提供详细的内容描述，并准确转录其中包含的所有文字。使用 '[图片1]', '[图片2]' 等标记来区分每一张图片的描述。";
-                const multiImagePrompt = [{ type: 'text', text: visionPromptText }];
-                allImages.forEach(image => {
-                    multiImagePrompt.push(image);
-                });
-                console.log(`[AI流程] 将 ${allImages.length} 张图片打包成一个请求发送给视觉模型。`);
-                const combinedDescriptions = await new Promise((res, rej) => {
-                    dispatchAICall(visionConfig, multiImagePrompt, null, (fullText) => res(fullText), (err) => rej(err), signal);
-                });
-                imageDescriptions = combinedDescriptions;
-                finalPrompt = await buildMultimodalPrompt(effectiveProvider, question, promptTemplate, customPrompts, currentAnswerContent, transcriptionText, paperDescription, temporaryPrompt, imageDescriptions, []);
-                finalPrompt = finalPrompt.map(p => p.text || '').join('');
-            } else {
-                console.log('[AI流程] 检测到图片，使用主AI模型的视觉能力');
-                finalPrompt = await buildMultimodalPrompt(effectiveProvider, question, promptTemplate, customPrompts, currentAnswerContent, transcriptionText, paperDescription, temporaryPrompt, '', temporaryImages);
-            }
-        } else {
-            console.log('[AI流程] 无图片或未启用视觉，纯文本模式');
-            finalPrompt = await buildMultimodalPrompt(effectiveProvider, question, promptTemplate, customPrompts, currentAnswerContent, transcriptionText, paperDescription, temporaryPrompt);
-            finalPrompt = finalPrompt.map(p => p.text || '').join('');
-        }
-        console.log(`[AI Helper] 题 ${question.id} (${questionType}) | Provider: ${effectiveProvider} | Final Prompt:`, finalPrompt);
-        return new Promise(async (resolve, reject) => {
-            const handleInternalComplete = (content) => {
-                if (typeof onComplete === 'function') onComplete(content);
-                resolve({ aiResult: content });
-            };
-            const handleInternalError = (error) => reject(error);
-            try {
-                if (signal?.aborted) { reject(new DOMException('请求在发送前被中止', 'AbortError')); return; }
-                await dispatchAICall(effectiveConfig, finalPrompt, onChunk, handleInternalComplete, handleInternalError, signal);
-            } catch (error) {
-                reject(error);
-            }
+    if (currentTextBlock) {
+        blocks.push({
+            key: `block${blockKey++}`,
+            text: currentTextBlock,
+            type: 'unstyled',
+            depth: 0,
+            inlineStyleRanges: [],
+            entityRanges: [],
+            data: {}
         });
     }
-    async function promptReport(question) {
-        const overlay = document.createElement('div');
-        overlay.style.cssText = `
+    if (blocks.length === 0) {
+        blocks.push({
+            key: 'empty',
+            text: '',
+            type: 'unstyled',
+            depth: 0,
+            inlineStyleRanges: [],
+            entityRanges: [],
+            data: {}
+        });
+    }
+    const richTextContent = {
+        blocks: blocks,
+        entityMap: {}
+    };
+    question.answer_items[0].answer = JSON.stringify(richTextContent);
+}
+async function buildMultimodalPrompt(provider, question, promptTemplate, customPrompts, currentAnswerContent, extraText = '', paperDescription = null, temporaryPrompt = '', imageDescriptions = '', extraImages = []) {
+    const questionTypeNum = question.type;
+    let multimodalContent = [];
+    let combinedExtraText = '';
+    if (extraText) {
+        combinedExtraText += `\n\n【听力原文】:\n${extraText}`;
+    }
+    if (imageDescriptions) {
+        combinedExtraText += `\n\n【图片内容描述】:\n${imageDescriptions}`;
+    }
+    if (temporaryPrompt || extraImages.length > 0) {
+        multimodalContent.push({ type: 'text', text: `【临时指令与补充材料】:\n` });
+        if (temporaryPrompt) {
+            multimodalContent.push({ type: 'text', text: temporaryPrompt });
+        }
+        if (extraImages.length > 0) {
+            multimodalContent.push(...extraImages);
+        }
+        multimodalContent.push({ type: 'text', text: '\n\n---\n\n' });
+    }
+    if (paperDescription) {
+        multimodalContent.push({ type: 'text', text: '【作业说明及公共材料】:\n' });
+        multimodalContent.push(...await parseRichTextToMultimodalContent(paperDescription));
+        multimodalContent.push({ type: 'text', text: '\n\n---\n\n' });
+    }
+    const placeholderRegex = /(\{questionTitle\}|\{optionsText\}|\{stemsText\}|\{answerContent\})/g;
+    const templateParts = promptTemplate.split(placeholderRegex);
+    const parseToStandardFormat = async (richText) => {
+        return await parseRichTextToMultimodalContent(richText);
+    };
+    for (const part of templateParts) {
+        switch (part) {
+            case '{questionTitle}':
+                if (question.parentQuestion && question.parentQuestion.title) {
+                    multimodalContent.push(...await parseToStandardFormat(question.parentQuestion.title));
+                    multimodalContent.push({ type: 'text', text: '\n\n--- (子题目) ---\n\n' });
+                }
+                multimodalContent.push(...await parseToStandardFormat(question.title));
+                break;
+            case '{optionsText}':
+                if ([1, 2, 5, 12].includes(questionTypeNum)) {
+                    for (const [idx, item] of question.answer_items.entries()) {
+                        const letter = String.fromCharCode(65 + idx);
+                        const prefix = questionTypeNum === 5 ? (idx === 0 ? '正确' : '错误') : '';
+                        multimodalContent.push({ type: 'text', text: `\n${letter}. ${prefix}` });
+                        if (questionTypeNum !== 5) {
+                            multimodalContent.push(...await parseToStandardFormat(item.value));
+                        }
+                    }
+                } else if (questionTypeNum === 13) {
+                    const rightItems = question.answer_items.filter(item => item.is_target_opt);
+                    for (const [idx, item] of rightItems.entries()) {
+                        const letter = String.fromCharCode(97 + idx);
+                        multimodalContent.push({ type: 'text', text: `\n${letter}. ` });
+                        multimodalContent.push(...await parseToStandardFormat(item.value));
+                    }
+                }
+                break;
+            case '{stemsText}':
+                if (questionTypeNum === 13) {
+                    const leftItems = question.answer_items.filter(item => !item.is_target_opt);
+                    for (const [idx, item] of leftItems.entries()) {
+                        const letter = String.fromCharCode(65 + idx);
+                        multimodalContent.push({ type: 'text', text: `\n${letter}. ` });
+                        multimodalContent.push(...await parseToStandardFormat(item.value));
+                    }
+                }
+                break;
+            case '{answerContent}':
+                if ([4, 6, 10].includes(questionTypeNum)) {
+                    const content = currentAnswerContent !== null ? currentAnswerContent : parseRichTextToPlainText(question.answer_items[0]?.answer || '');
+                    multimodalContent.push({ type: 'text', text: content });
+                }
+                break;
+            default:
+                if (part) {
+                    let textPart = part;
+                    textPart = textPart.replace('{questionType}', getQuestionType(question.type));
+                    if (question.type === 10) {
+                        const progSetting = question.program_setting || {};
+                        textPart = textPart.replace('{language}', progSetting.language?.join(', ') || '未指定');
+                        textPart = textPart.replace('{max_time}', progSetting.max_time || 'N/A');
+                        textPart = textPart.replace('{max_memory}', progSetting.max_memory || 'N/A');
+                    }
+                    multimodalContent.push({ type: 'text', text: textPart });
+                }
+        }
+    }
+    if (combinedExtraText) {
+        multimodalContent.push({ type: 'text', text: combinedExtraText });
+    }
+    const mergedContent = [];
+    let textBuffer = '';
+    for (const item of multimodalContent) {
+        if (item.type === 'text') {
+            textBuffer += item.text;
+        } else {
+            if (textBuffer) {
+                mergedContent.push({ type: 'text', text: textBuffer });
+                textBuffer = '';
+            }
+            mergedContent.push(item);
+        }
+    }
+    if (textBuffer) {
+        mergedContent.push({ type: 'text', text: textBuffer });
+    }
+    return mergedContent;
+}
+async function _getAIAnswer(question, aiConfig, customPrompts, temporaryPrompt = '', currentAnswerContent = null, onChunk = null, onComplete = null, signal = null, notificationId = null) {
+    if (signal?.aborted) {
+        return Promise.resolve({ cancelled: true });
+    }
+    let temporaryImages = [];
+    if (aiConfig.visionEnabled) {
+        const previewContainer = document.getElementById('temp-prompt-image-preview');
+        if (previewContainer) {
+            previewContainer.querySelectorAll('img').forEach(img => {
+                if (img.dataset.base64) {
+                    temporaryImages.push({ type: 'image_url', image_url: { url: img.dataset.base64 } });
+                }
+            });
+        }
+    }
+    const questionTypeNum = question.type;
+    const questionType = getQuestionType(questionTypeNum);
+    const typeCodeStr = String(questionTypeNum);
+    let promptTemplate = customPrompts[typeCodeStr] || defaultPrompts[typeCodeStr];
+    if (!promptTemplate) {
+        console.warn(`未找到题型 ${questionTypeNum} (${questionType}) 的 Prompt 模板！将跳过此题。`);
+        return Promise.resolve({ skipped: true, reason: `不支持的题型 (${questionType})` });
+    }
+    const paperDescription = localStorage.getItem('paperDescription');
+    const questionIdForLog = question.parentQuestion ?
+          `${question.parentQuestion.id} (子问题: ${question.id})` :
+    question.id;
+    const videoCheckEnabled = aiConfig.sttVideoEnabled !== false;
+    const MEDIA_PROCESS_ID = notificationId || `media-process-${question.id}`
+        const hasVideoInSelf = containsVideo(question.title);
+    const hasVideoInParent = question.parentQuestion && containsVideo(question.parentQuestion.title);
+    const hasVideoInPaper = paperDescription && containsVideo(paperDescription);
+    const hasVideo = hasVideoInSelf || hasVideoInParent || hasVideoInPaper;
+    const hasAudioInSelf = containsAudio(question.title);
+    const hasAudioInParent = question.parentQuestion && containsAudio(question.parentQuestion.title);
+    const hasAudioInPaper = paperDescription && containsAudio(paperDescription);
+    const hasAudio = hasAudioInSelf || hasAudioInParent || hasAudioInPaper;
+    let transcriptionText = '';
+    let imageDescriptions = '';
+    let mediaDataForPrompt = [];
+    const audioProcessingMode = aiConfig.audioProcessingMode || 'main_model';
+    const mainProvider = aiConfig.provider;
+    const analyzeVideoFrames = aiConfig.geminiAnalyzeVideoFramesEnabled || false;
+    const mainModelSupportsAudio = mainProvider === 'gemini';
+    if ((hasAudio || hasVideo) && audioProcessingMode === 'main_model' && mainModelSupportsAudio) {
+        console.log(`[多模态处理] 题 ${question.id}: 检测到媒体，使用主AI模型(${mainProvider})直接处理。通知ID: ${MEDIA_PROCESS_ID}`);
+        showNotification('🎤 正在准备媒体文件...', { type: 'info', duration: 0, id: MEDIA_PROCESS_ID });
+        try {
+            const allMediaBlocks = [];
+            const sources = [paperDescription, question.parentQuestion?.title, question.title].filter(Boolean);
+            sources.forEach(source => {
+                try {
+                    const jsonContent = JSON.parse(source);
+                    jsonContent.blocks.forEach(b => {
+                        if (b.type === 'atomic' && b.data && (b.data.type === 'VIDEO' || b.data.type === 'AUDIO')) {
+                            allMediaBlocks.push(b);
+                        }
+                    });
+                } catch (e) {
+                    console.warn('[Gemini视频理解] 解析视频富文本失败:', e);
+                    showNotification('视频内容解析失败，无法识别视频块', { type: 'error', id: 'video-process' });
+                }
+            });
+            if (allMediaBlocks.length > 0) {
+                for (const mediaBlock of allMediaBlocks) {
+                    const mediaType = mediaBlock.data.type;
+                    const mediaId = (mediaType === 'AUDIO') ? mediaBlock.data.data.quote_id : mediaBlock.data.data.video_id;
+                    if (!mediaId) continue;
+                    if (videoCache[mediaId]) {
+                        mediaDataForPrompt.push(videoCache[mediaId]);
+                        continue;
+                    }
+                    if (videoProcessingLocks[mediaId]) {
+                        mediaDataForPrompt.push(await videoProcessingLocks[mediaId]);
+                        continue;
+                    }
+                    const processingPromise = (async () => {
+                        try {
+                            const progressCallback = (progress) => {
+                                const percentage = (progress * 100).toFixed(0);
+                                showNotification(`📹 正在下载媒体文件... (${percentage}%)`, { type: 'info', duration: 0, id: MEDIA_PROCESS_ID });
+                            };
+                            if (mediaType === 'VIDEO') {
+                                const urls = await getVideoUrl(mediaId);
+                                if (!urls || !urls.videoUrl) throw new Error(`无法获取视频URL for ID ${mediaId}`);
+                                if (analyzeVideoFrames) {
+                                    showNotification('📹 正在下载并准备视频文件以供画面分析...', { type: 'info', duration: 0, id: MEDIA_PROCESS_ID });
+                                    const videoContent = await videoToBase64(urls.videoUrl, 'video/mp4', progressCallback);
+                                    if (!videoContent) throw new Error('视频转Base64失败');
+                                    return { type: 'video_data', video_data: videoContent };
+                                } else {
+                                    showNotification('🎵 正在从视频中提取音轨...', { type: 'info', duration: 0, id: MEDIA_PROCESS_ID });
+                                    const audioBlob = await extractAndEncodeAudio(urls.videoUrl, (progress, stage) => {
+                                        const message = `🎵 提取音轨: ${stage}...(${(progress * 100).toFixed(0)}%)`;
+                                        showNotification(message, { id: MEDIA_PROCESS_ID, type: 'info', duration: 0 });
+                                    });
+                                    if (!audioBlob) throw new Error('从视频提取音轨失败');
+                                    const base64Audio = await new Promise((resolve, reject) => {
+                                        const reader = new FileReader();
+                                        reader.onloadend = () => resolve(reader.result.split(',')[1]);
+                                        reader.onerror = reject;
+                                        reader.readAsDataURL(audioBlob);
+                                    });
+                                    return { type: 'video_data', video_data: { base64: base64Audio, mimeType: 'audio/wav' } };
+                                }
+                            } else {
+                                const audioUrl = await getAudioUrl(mediaId);
+                                if (!audioUrl) throw new Error(`无法获取音频URL for ID ${mediaId}`);
+                                const audioMimeType = audioUrl.includes('.mp3') ? 'audio/mp3' : (audioUrl.includes('.wav') ? 'audio/wav' : 'audio/mpeg');
+                                const audioContent = await videoToBase64(audioUrl, audioMimeType, progressCallback);
+                                if (!audioContent) throw new Error('音频转Base64失败');
+                                return { type: 'video_data', video_data: audioContent };
+                            }
+                        } finally {
+                            delete videoProcessingLocks[mediaId];
+                        }
+                    })();
+                    videoProcessingLocks[mediaId] = processingPromise;
+                    const result = await processingPromise;
+                    videoCache[mediaId] = result;
+                    mediaDataForPrompt.push(result);
+                }
+                promptTemplate = `你是一个多模态AI助手。请结合提供的【媒体文件】（可能是音频或视频）和【文本问题】来生成答案。\n\n${promptTemplate}`;
+                showNotification('🎤 媒体文件已准备好，提交给AI...', { type: 'success', duration: 2000, id: MEDIA_PROCESS_ID });
+            } else {
+                showNotification('未找到有效媒体文件。', { type: 'warning', duration: 2000, id: MEDIA_PROCESS_ID });
+            }
+        } catch (error) {
+            console.error(`[多模态处理] 失败: ${error.message}`);
+            showNotification(`媒体处理失败: ${error.message}`, { type: 'error', duration: 5000, id: MEDIA_PROCESS_ID });
+            transcriptionText = "[媒体处理失败，无法直接分析]";
+        }
+    } else if ((hasAudio || (hasVideo && videoCheckEnabled)) && aiConfig.sttEnabled) {
+        const STT_PROGRESS_ID = notificationId || `stt-progress-${question.id}`;
+        console.log(`[STT流程] 题 ${question.id}: 使用独立STT服务处理媒体。通知ID: ${STT_PROGRESS_ID}`);
+        try {
+            let allMediaBlocks = [];
+            const addedMediaIds = new Set();
+            const collectMediaBlocks = (richText) => {
+                if (!richText) return;
+                try {
+                    const jsonContent = JSON.parse(richText);
+                    const mediaBlocks = jsonContent.blocks.filter(block =>
+                                                                  block.type === 'atomic' && block.data && (block.data.type === 'AUDIO' || (block.data.type === 'VIDEO' && videoCheckEnabled))
+                                                                 );
+                    mediaBlocks.forEach(block => {
+                        const mediaType = block.data.type;
+                        const mediaId = (mediaType === 'AUDIO') ? block.data.data?.quote_id : block.data.data?.video_id;
+                        if (mediaId && !addedMediaIds.has(mediaId)) {
+                            allMediaBlocks.push(block);
+                            addedMediaIds.add(mediaId);
+                        }
+                    });
+                } catch (e) { console.error('解析富文本失败:', e, richText); }
+            };
+            if (hasAudioInPaper || hasVideoInPaper) collectMediaBlocks(paperDescription);
+            if (hasAudioInParent || hasVideoInParent) collectMediaBlocks(question.parentQuestion.title);
+            if (hasAudioInSelf || hasVideoInSelf) collectMediaBlocks(question.title);
+            if (allMediaBlocks.length > 0) {
+                const transcriptionPromises = allMediaBlocks.map(async (mediaBlock, mapIndex) => {
+                    const mediaType = mediaBlock.data.type;
+                    const mediaId = (mediaType === 'AUDIO') ? mediaBlock.data.data.quote_id : mediaBlock.data.data.video_id;
+                    const cacheKey = `${mediaType.toLowerCase()}_transcription_${mediaId}`;
+                    if (sttCache[cacheKey]) {
+                        console.log(`[STT Cache] HIT for ${mediaType}: ${mediaId}`);
+                        return sttCache[cacheKey];
+                    }
+                    if (mediaProcessingLocks[mediaId]) {
+                        console.log(`[STT Lock] 题 ${questionIdForLog}: 媒体 ${mediaId} 正在被其他任务处理，等待结果...`);
+                        return await mediaProcessingLocks[mediaId];
+                    }
+                    const processingPromise = (async () => {
+                        try {
+                            let mediaSource;
+                            if (mediaType === 'AUDIO') {
+                                mediaSource = await getAudioUrl(mediaId);
+                            } else {
+                                const urls = await getVideoUrl(mediaId);
+                                if (!urls || !urls.videoUrl) throw new Error(`无法获取Video ID ${mediaId}的播放地址`);
+                                const progressCallback = (progress, stage) => {
+                                    const message = `🎬 [${mapIndex + 1}/${allMediaBlocks.length}] 提取视频音轨: ${stage}...(${(progress * 100).toFixed(0)}%)`;
+                                    showNotification(message, { id: STT_PROGRESS_ID, type: 'info', duration: 0 });
+                                };
+                                mediaSource = await extractAndEncodeAudio(urls.videoUrl, progressCallback);
+                            }
+                            if (!mediaSource) throw new Error(`无法获取 ${mediaType} ID ${mediaId} 的媒体源`);
+                            if (!signal?.aborted) {
+                                showNotification(`☁️ [${mapIndex + 1}/${allMediaBlocks.length}] 上传转录 ${mediaType}...`, { id: STT_PROGRESS_ID, type: 'info', duration: 0 });
+                                const transcription = await callSttApi(mediaSource, aiConfig);
+                                sttCache[cacheKey] = transcription;
+                                return transcription;
+                            }
+                            return `[${mediaType}转录取消]`;
+                        } catch (err) {
+                            console.error(`[STT Worker] 媒体 ${mediaId} 处理失败:`, err);
+                            throw err;
+                        } finally {
+                            delete mediaProcessingLocks[mediaId];
+                        }
+                    })();
+                    mediaProcessingLocks[mediaId] = processingPromise;
+                    return await processingPromise;
+                });
+                const allTranscriptions = await Promise.all(transcriptionPromises);
+                showNotification('媒体处理完成', { id: STT_PROGRESS_ID, type: 'success', duration: 500 });
+                if (allTranscriptions.length === 1) {
+                    transcriptionText = allTranscriptions[0];
+                } else {
+                    transcriptionText = allTranscriptions
+                        .map((text, i) => `【媒体内容 ${i + 1}】:\n${text}`)
+                        .join('\n\n---\n\n');
+                }
+                console.log('[STT流程] 所有媒体处理完成，合并后的文本:', transcriptionText);
+            } else {
+                console.warn(`[STT流程] 标记为有媒体但未找到有效的媒体块。`);
+            }
+        } catch (error) {
+            showNotification(`媒体处理失败`, { id: STT_PROGRESS_ID, type: 'error', duration: 3000 });
+            console.error(`[STT流程] 为题目 ${questionIdForLog} 处理媒体时发生严重错误: ${error.message}`);
+            showNotification(`处理媒体失败，将仅使用题目文本进行AI辅助。`, { type: 'warning' });
+            transcriptionText = "[语音/视频转录失败]";
+        }
+    }
+    let finalPrompt;
+    let effectiveConfig = { ...aiConfig };
+    let effectiveProvider = aiConfig.provider;
+    const allContentSources = [question.title, paperDescription, question.parentQuestion?.title].filter(Boolean);
+    if (question.answer_items) {
+        question.answer_items.forEach(item => allContentSources.push(item.value));
+    }
+    const hasImagesInContent = allContentSources.some(source => /"type":"IMAGE"/.test(source));
+    const hasImages = hasImagesInContent || temporaryImages.length > 0;
+    if (mediaDataForPrompt.length > 0) {
+        finalPrompt = await buildMultimodalPrompt(effectiveProvider, question, promptTemplate, customPrompts, currentAnswerContent, '', paperDescription, temporaryPrompt, '', temporaryImages);
+        finalPrompt.unshift(...mediaDataForPrompt);
+    } else if (hasImages && aiConfig.visionEnabled) {
+        if (aiConfig.visionProvider && aiConfig.visionProvider !== 'main_model') {
+            console.log(`[AI流程] 检测到图片，使用独立的视觉模型: ${aiConfig.visionProvider}`);
+            showNotification('👁️ 正在调用独立视觉模型...', { type: 'info' });
+            const visionConfig = {
+                provider: aiConfig.visionProvider,
+                endpoint: aiConfig.visionEndpoint,
+                apiKey: aiConfig.visionApiKey,
+                model: aiConfig.visionModel
+            };
+            const allImages = [...temporaryImages];
+            for (const source of allContentSources) {
+                const parsedContent = await parseRichTextToMultimodalContent(source);
+                parsedContent.forEach(part => {
+                    if (part.type === 'image_url') {
+                        if (!allImages.some(img => img.image_url.url.substring(0, 50) === part.image_url.url.substring(0, 50))) {
+                            allImages.push(part);
+                        }
+                    }
+                });
+            }
+            console.log(`[AI流程] 共找到 ${allImages.length} 张图片送往视觉模型处理。`);
+            const visionPromptText = "你将收到多张图片。请按顺序为每一张图片提供详细的内容描述，并准确转录其中包含的所有文字。使用 '[图片1]', '[图片2]' 等标记来区分每一张图片的描述。";
+            const multiImagePrompt = [{ type: 'text', text: visionPromptText }];
+            allImages.forEach(image => {
+                multiImagePrompt.push(image);
+            });
+            console.log(`[AI流程] 将 ${allImages.length} 张图片打包成一个请求发送给视觉模型。`);
+            const combinedDescriptions = await new Promise((res, rej) => {
+                dispatchAICall(visionConfig, multiImagePrompt, null, (fullText) => res(fullText), (err) => rej(err), signal);
+            });
+            imageDescriptions = combinedDescriptions;
+            finalPrompt = await buildMultimodalPrompt(effectiveProvider, question, promptTemplate, customPrompts, currentAnswerContent, transcriptionText, paperDescription, temporaryPrompt, imageDescriptions, []);
+            finalPrompt = finalPrompt.map(p => p.text || '').join('');
+        } else {
+            console.log('[AI流程] 检测到图片，使用主AI模型的视觉能力');
+            finalPrompt = await buildMultimodalPrompt(effectiveProvider, question, promptTemplate, customPrompts, currentAnswerContent, transcriptionText, paperDescription, temporaryPrompt, '', temporaryImages);
+        }
+    } else {
+        console.log('[AI流程] 无图片或未启用视觉，纯文本模式');
+        finalPrompt = await buildMultimodalPrompt(effectiveProvider, question, promptTemplate, customPrompts, currentAnswerContent, transcriptionText, paperDescription, temporaryPrompt);
+        finalPrompt = finalPrompt.map(p => p.text || '').join('');
+    }
+    console.log(`[AI Helper] 题 ${question.id} (${questionType}) | Provider: ${effectiveProvider} | Final Prompt:`, finalPrompt);
+    return new Promise(async (resolve, reject) => {
+        const handleInternalComplete = (content) => {
+            if (typeof onComplete === 'function') onComplete(content);
+            resolve({ aiResult: content });
+        };
+        const handleInternalError = (error) => reject(error);
+        try {
+            if (signal?.aborted) { reject(new DOMException('请求在发送前被中止', 'AbortError')); return; }
+            await dispatchAICall(effectiveConfig, finalPrompt, onChunk, handleInternalComplete, handleInternalError, signal);
+        } catch (error) {
+            reject(error);
+        }
+    });
+}
+async function promptReport(question) {
+    const overlay = document.createElement('div');
+    overlay.style.cssText = `
             position: fixed; top: 0; left: 0; width: 100%; height: 100%;
             background-color: rgba(0, 0, 0, 0.7); z-index: 10001;
             display: flex; align-items: center; justify-content: center;
@@ -6355,10 +6444,10 @@
             }
         };
     }
-    function createReportButton(question) {
-        const reportButton = document.createElement('button');
-        reportButton.textContent = '答案有误？';
-        reportButton.style.cssText = `
+function createReportButton(question) {
+    const reportButton = document.createElement('button');
+    reportButton.textContent = '答案有误？';
+    reportButton.style.cssText = `
             background: none; border: none; color: #9ca3af;
             font-size: 13px; cursor: pointer; transition: color 0.2s;
         `;
@@ -6377,126 +6466,126 @@
         actionsContainer.appendChild(reportButton);
         return actionsContainer;
     }
-    function attachSttOnlyButtonListeners(container) {
-        const buttons = container.querySelectorAll('[id^="stt-only-btn-"]');
-        buttons.forEach(button => {
-            if (button.dataset.listenerAttached) return;
-            button.dataset.listenerAttached = 'true';
-            button.onclick = async () => {
-                const fileId = button.dataset.fileId;
-                const resultContainer = container.querySelector(`#stt-result-container-${fileId}`);
-                const aiConfig = JSON.parse(localStorage.getItem('aiConfig') || '{}');
-                if (!aiConfig.sttEnabled) {
-                    showNotification('请先在 AI 设置中启用 STT 功能。', { type: 'warning' });
-                    return;
-                }
-                button.disabled = true;
-                button.textContent = '🔄 转录中...';
-                try {
-                    const audioUrl = await getAudioUrl(fileId);
-                    if (!audioUrl) throw new Error("无法获取音频URL");
-                    const transcription = await callSttApi(audioUrl, aiConfig);
-                    const pre = document.createElement('pre');
-                    pre.textContent = transcription;
-                    pre.style.cssText = `white-space: pre-wrap; word-wrap: break-word; margin: 0; font-size: 14px; color: #334155; line-height: 1.6;`;
-                    resultContainer.innerHTML = '';
-                    resultContainer.appendChild(pre);
-                    resultContainer.style.display = 'block';
-                    button.textContent = '✅ 转录完成';
-                } catch (error) {
-                    console.error('仅转录音频时失败:', error);
-                    showNotification(`转录失败: ${error.message}`, { type: 'error' });
-                    button.disabled = false;
-                    button.textContent = '🎤 重新尝试转录';
-                }
-            };
-        });
-    }
-    function attachVideoSttButtonListeners(container) {
-        const buttons = container.querySelectorAll('[id^="video-stt-btn-"]');
-        buttons.forEach(button => {
-            if (button.dataset.listenerAttached) return;
-            button.dataset.listenerAttached = 'true';
-            button.onclick = async () => {
-                const videoId = button.id.replace('video-stt-btn-', '');
-                const videoUrl = button.dataset.videoUrl;
-                const resultContainer = container.querySelector(`#video-stt-result-container-${videoId}`);
-                const aiConfig = JSON.parse(localStorage.getItem('aiConfig') || '{}');
-                if (!aiConfig.sttEnabled) {
-                    showNotification('请先在 AI 设置中启用 STT 功能。', { type: 'warning' });
-                    return;
-                }
-                button.disabled = true;
-                button.innerHTML = '🔄 <span class="progress-text">处理中...</span>';
-                const progressTextSpan = button.querySelector('.progress-text');
-                const updateProgress = (progress, stage) => {
-                    if (progressTextSpan) {
-                        const percentage = (progress * 100).toFixed(0);
-                        progressTextSpan.textContent = `${stage}... (${percentage}%)`;
-                    }
-                };
-                try {
-                    if (!videoUrl) throw new Error("无效的视频URL");
-                    const audioBlob = await extractAndEncodeAudio(videoUrl, updateProgress);
-                    if (progressTextSpan) progressTextSpan.textContent = '上传转录中...';
-                    const transcription = await callSttApi(audioBlob, aiConfig);
-                    const pre = document.createElement('pre');
-                    pre.textContent = transcription;
-                    pre.style.cssText = `white-space: pre-wrap; word-wrap: break-word; margin: 0; font-size: 14px; color: #334155; line-height: 1.6;`;
-                    resultContainer.innerHTML = '';
-                    resultContainer.appendChild(pre);
-                    resultContainer.style.display = 'block';
-                    button.textContent = '✅ 转录完成';
-                } catch (error) {
-                    console.error('视频音频转录失败:', error);
-                    showNotification(`视频音频转录失败: ${error.message}`, { type: 'error' });
-                    button.disabled = false;
-                    button.innerHTML = '🎬 重新尝试转录';
-                }
-            };
-        });
-    }
-    function questionHasAnswer(question) {
-        if (!question) return false;
-        const richTextIsEffectivelyEmpty = (content) => {
-            if (!content || typeof content !== 'string') return true;
-            if (content.trim() === '' || content === '{}') return true;
+function attachSttOnlyButtonListeners(container) {
+    const buttons = container.querySelectorAll('[id^="stt-only-btn-"]');
+    buttons.forEach(button => {
+        if (button.dataset.listenerAttached) return;
+        button.dataset.listenerAttached = 'true';
+        button.onclick = async () => {
+            const fileId = button.dataset.fileId;
+            const resultContainer = container.querySelector(`#stt-result-container-${fileId}`);
+            const aiConfig = JSON.parse(localStorage.getItem('aiConfig') || '{}');
+            if (!aiConfig.sttEnabled) {
+                showNotification('请先在 AI 设置中启用 STT 功能。', { type: 'warning' });
+                return;
+            }
+            button.disabled = true;
+            button.textContent = '🔄 转录中...';
             try {
-                const parsed = JSON.parse(content);
-                if (parsed.blocks && Array.isArray(parsed.blocks)) {
-                    if (parsed.blocks.length === 0) return true;
-                    if (parsed.blocks.length === 1 && parsed.blocks[0].text === '') {
-                        return parsed.blocks[0].type !== 'atomic';
-                    }
-                }
-            } catch (e) { }
-            return false;
+                const audioUrl = await getAudioUrl(fileId);
+                if (!audioUrl) throw new Error("无法获取音频URL");
+                const transcription = await callSttApi(audioUrl, aiConfig);
+                const pre = document.createElement('pre');
+                pre.textContent = transcription;
+                pre.style.cssText = `white-space: pre-wrap; word-wrap: break-word; margin: 0; font-size: 14px; color: #334155; line-height: 1.6;`;
+                resultContainer.innerHTML = '';
+                resultContainer.appendChild(pre);
+                resultContainer.style.display = 'block';
+                button.textContent = '✅ 转录完成';
+            } catch (error) {
+                console.error('仅转录音频时失败:', error);
+                showNotification(`转录失败: ${error.message}`, { type: 'error' });
+                button.disabled = false;
+                button.textContent = '🎤 重新尝试转录';
+            }
         };
-        switch (question.type) {
-            case 1:
-            case 2:
-            case 5:
-                return question.answer_items && question.answer_items.some(item => item.answer_checked === 2);
-            case 4:
-                return question.answer_items && question.answer_items.some(item => !richTextIsEffectivelyEmpty(item.answer));
-            case 6:
-            case 10:
-                return question.answer_items && question.answer_items.length > 0 && !richTextIsEffectivelyEmpty(question.answer_items[0].answer);
-            case 12:
-                return question.answer_items && question.answer_items.every(item => item.answer !== null && item.answer !== undefined && item.answer !== '');
-            case 13:
-                return question.answer_items && question.answer_items.some(item => !item.is_target_opt && item.answer !== null && item.answer !== undefined && item.answer !== '');
-            case 9:
-                return question.subQuestions && question.subQuestions.some(subQ => questionHasAnswer(subQ));
-            default:
-                return false;
-        }
+    });
+}
+function attachVideoSttButtonListeners(container) {
+    const buttons = container.querySelectorAll('[id^="video-stt-btn-"]');
+    buttons.forEach(button => {
+        if (button.dataset.listenerAttached) return;
+        button.dataset.listenerAttached = 'true';
+        button.onclick = async () => {
+            const videoId = button.id.replace('video-stt-btn-', '');
+            const videoUrl = button.dataset.videoUrl;
+            const resultContainer = container.querySelector(`#video-stt-result-container-${videoId}`);
+            const aiConfig = JSON.parse(localStorage.getItem('aiConfig') || '{}');
+            if (!aiConfig.sttEnabled) {
+                showNotification('请先在 AI 设置中启用 STT 功能。', { type: 'warning' });
+                return;
+            }
+            button.disabled = true;
+            button.innerHTML = '🔄 <span class="progress-text">处理中...</span>';
+            const progressTextSpan = button.querySelector('.progress-text');
+            const updateProgress = (progress, stage) => {
+                if (progressTextSpan) {
+                    const percentage = (progress * 100).toFixed(0);
+                    progressTextSpan.textContent = `${stage}... (${percentage}%)`;
+                }
+            };
+            try {
+                if (!videoUrl) throw new Error("无效的视频URL");
+                const audioBlob = await extractAndEncodeAudio(videoUrl, updateProgress);
+                if (progressTextSpan) progressTextSpan.textContent = '上传转录中...';
+                const transcription = await callSttApi(audioBlob, aiConfig);
+                const pre = document.createElement('pre');
+                pre.textContent = transcription;
+                pre.style.cssText = `white-space: pre-wrap; word-wrap: break-word; margin: 0; font-size: 14px; color: #334155; line-height: 1.6;`;
+                resultContainer.innerHTML = '';
+                resultContainer.appendChild(pre);
+                resultContainer.style.display = 'block';
+                button.textContent = '✅ 转录完成';
+            } catch (error) {
+                console.error('视频音频转录失败:', error);
+                showNotification(`视频音频转录失败: ${error.message}`, { type: 'error' });
+                button.disabled = false;
+                button.innerHTML = '🎬 重新尝试转录';
+            }
+        };
+    });
+}
+function questionHasAnswer(question) {
+    if (!question) return false;
+    const richTextIsEffectivelyEmpty = (content) => {
+        if (!content || typeof content !== 'string') return true;
+        if (content.trim() === '' || content === '{}') return true;
+        try {
+            const parsed = JSON.parse(content);
+            if (parsed.blocks && Array.isArray(parsed.blocks)) {
+                if (parsed.blocks.length === 0) return true;
+                if (parsed.blocks.length === 1 && parsed.blocks[0].text === '') {
+                    return parsed.blocks[0].type !== 'atomic';
+                }
+            }
+        } catch (e) { }
+        return false;
+    };
+    switch (question.type) {
+        case 1:
+        case 2:
+        case 5:
+            return question.answer_items && question.answer_items.some(item => item.answer_checked === 2);
+        case 4:
+            return question.answer_items && question.answer_items.some(item => !richTextIsEffectivelyEmpty(item.answer));
+        case 6:
+        case 10:
+            return question.answer_items && question.answer_items.length > 0 && !richTextIsEffectivelyEmpty(question.answer_items[0].answer);
+        case 12:
+            return question.answer_items && question.answer_items.every(item => item.answer !== null && item.answer !== undefined && item.answer !== '');
+        case 13:
+            return question.answer_items && question.answer_items.some(item => !item.is_target_opt && item.answer !== null && item.answer !== undefined && item.answer !== '');
+        case 9:
+            return question.subQuestions && question.subQuestions.some(subQ => questionHasAnswer(subQ));
+        default:
+            return false;
     }
-    function showAnswerEditor() {
-        if (!document.getElementById('custom-checkbox-style')) {
-            const style = document.createElement('style');
-            style.id = 'custom-checkbox-style';
-            style.textContent = `
+}
+function showAnswerEditor() {
+    if (!document.getElementById('custom-checkbox-style')) {
+        const style = document.createElement('style');
+        style.id = 'custom-checkbox-style';
+        style.textContent = `
                 .batch-ai-checkbox-wrapper {
                     display: flex;
                     align-items: center;
@@ -7567,9 +7656,9 @@
                         height: 100%;
                         width: ${Math.max(percentage, 2)}%;
                         background: ${isCorrectAnswer
-                            ? 'linear-gradient(90deg, rgba(34, 197, 94, 0.08) 0%, rgba(34, 197, 94, 0.15) 100%)'
-                            : 'linear-gradient(90deg, rgba(148, 163, 184, 0.05) 0%, rgba(148, 163, 184, 0.12) 100%)'
-                        };
+                        ? 'linear-gradient(90deg, rgba(34, 197, 94, 0.08) 0%, rgba(34, 197, 94, 0.15) 100%)'
+                    : 'linear-gradient(90deg, rgba(148, 163, 184, 0.05) 0%, rgba(148, 163, 184, 0.12) 100%)'
+                };
                         transition: width 0.8s cubic-bezier(0.4, 0, 0.2, 1);
                         border-radius: 16px;
                     `;
@@ -7637,9 +7726,9 @@
                     margin-right: 20px;
                     transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
                     box-shadow: ${optionInput.checked
-                        ? '0 4px 12px rgba(99, 102, 241, 0.3)'
-                        : '0 2px 6px rgba(0, 0, 0, 0.08)'
-                    };
+                    ? '0 4px 12px rgba(99, 102, 241, 0.3)'
+                : '0 2px 6px rgba(0, 0, 0, 0.08)'
+            };
                     flex-shrink: 0;
                 `;
                 let toggleCircle = document.createElement('span');
@@ -7666,7 +7755,7 @@
                 `;
                 icon.innerHTML = optionInput.checked ?
                     '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"></polyline></svg>' :
-                    '';
+                '';
                 toggleCircle.appendChild(icon);
                 customCheckbox.appendChild(toggleCircle);
                 optionLabel.onclick = () => {
@@ -7711,7 +7800,7 @@
                 let optionText = document.createElement('span');
                 optionText.innerHTML = question.type === 5 ?
                     (idx === 0 ? '正确' : '错误') :
-                    await parseRichTextContentAsync(item.value);
+                await parseRichTextContentAsync(item.value);
                 optionText.style.cssText = `
                     color: #1f2937;
                     flex: 1;
@@ -9345,10 +9434,10 @@
             const renderRichContent = (content) => {
                 if (!content) return '';
                 let processed = content
-                    .replace(/^### (.*?)$/gm, '<h3>$1</h3>')
-                    .replace(/^## (.*?)$/gm, '<h3>$1</h3>')
-                    .replace(/^# (.*?)$/gm, '<h3>$1</h3>')
-                    .replace(/^#### (.*?)$/gm, '<h4>$1</h4>');
+                .replace(/^### (.*?)$/gm, '<h3>$1</h3>')
+                .replace(/^## (.*?)$/gm, '<h3>$1</h3>')
+                .replace(/^# (.*?)$/gm, '<h3>$1</h3>')
+                .replace(/^#### (.*?)$/gm, '<h4>$1</h4>');
                 processed = processed.replace(/^---+$/gm, '<hr>');
                 processed = processed.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
                 processed = processed.replace(/^[•\-\*]\s+(.*?)$/gm, '<li>$1</li>');
@@ -10038,1099 +10127,1099 @@
             });
         });
     }
-    async function exportHomework() {
-        console.log('调用 exportHomework 函数 (带头部信息增强版)');
-        let storedData = localStorage.getItem('answerData');
-        if (!storedData) {
-            showNotification('未找到存储的数据，请先点击"获取答案"按钮。', {
-                type: 'error',
-                keywords: ['存储', '答案', '获取'],
-                animation: 'fadeSlide'
-            });
-            return;
+async function exportHomework() {
+    console.log('调用 exportHomework 函数 (带头部信息增强版)');
+    let storedData = localStorage.getItem('answerData');
+    if (!storedData) {
+        showNotification('未找到存储的数据，请先点击"获取答案"按钮。', {
+            type: 'error',
+            keywords: ['存储', '答案', '获取'],
+            animation: 'fadeSlide'
+        });
+        return;
+    }
+    const answerData = JSON.parse(storedData);
+    let assignmentTitle = localStorage.getItem('assignmentTitle') || '作业答案';
+    const paperDescription = localStorage.getItem('paperDescription');
+    const progress = createProgressBar();
+    progress.show();
+    try {
+        const docContent = [];
+        showNotification('开始导出作业，正在准备内容...', {
+            type: 'info',
+            keywords: ['导出', '准备'],
+            animation: 'scale'
+        });
+        docContent.push(
+            new Paragraph({
+                text: assignmentTitle,
+                heading: HeadingLevel.TITLE,
+                alignment: AlignmentType.CENTER,
+                spacing: { after: 400 },
+            }),
+            new Paragraph({
+                text: `导出时间：${new Date().toLocaleString()}`,
+                alignment: AlignmentType.CENTER,
+                spacing: { after: 400 },
+            })
+        );
+        if (paperDescription && paperDescription !== '{}' && !isEmptyRichText(paperDescription)) {
+            console.log('发现作业头部信息，开始处理并添加到文档...');
+            progress.update(0, answerData.length, '正在处理头部信息');
+            docContent.push(new Paragraph({
+                text: "作业说明 / 公共材料",
+                heading: HeadingLevel.HEADING_1,
+                style: "Heading1",
+                spacing: { before: 400, after: 200 },
+            }));
+            const descriptionParagraphs = await parseRichTextToParagraphs(paperDescription);
+            docContent.push(...descriptionParagraphs);
+            docContent.push(new Paragraph({
+                children: [new TextRun("__________________________________________________________")],
+                alignment: AlignmentType.CENTER,
+                spacing: { after: 600 },
+            }));
+            docContent.push(new Paragraph({
+                children: [new TextRun("__________________________________________________________")],
+                alignment: AlignmentType.CENTER,
+                spacing: { after: 600 },
+            }));
         }
-        const answerData = JSON.parse(storedData);
-        let assignmentTitle = localStorage.getItem('assignmentTitle') || '作业答案';
-        const paperDescription = localStorage.getItem('paperDescription');
-        const progress = createProgressBar();
-        progress.show();
-        try {
-            const docContent = [];
-            showNotification('开始导出作业，正在准备内容...', {
-                type: 'info',
-                keywords: ['导出', '准备'],
-                animation: 'scale'
-            });
-            docContent.push(
-                new Paragraph({
-                    text: assignmentTitle,
-                    heading: HeadingLevel.TITLE,
-                    alignment: AlignmentType.CENTER,
-                    spacing: { after: 400 },
-                }),
-                new Paragraph({
-                    text: `导出时间：${new Date().toLocaleString()}`,
-                    alignment: AlignmentType.CENTER,
-                    spacing: { after: 400 },
-                })
-            );
-            if (paperDescription && paperDescription !== '{}' && !isEmptyRichText(paperDescription)) {
-                console.log('发现作业头部信息，开始处理并添加到文档...');
-                progress.update(0, answerData.length, '正在处理头部信息');
-                docContent.push(new Paragraph({
-                    text: "作业说明 / 公共材料",
-                    heading: HeadingLevel.HEADING_1,
-                    style: "Heading1",
-                    spacing: { before: 400, after: 200 },
-                }));
-                const descriptionParagraphs = await parseRichTextToParagraphs(paperDescription);
-                docContent.push(...descriptionParagraphs);
-                docContent.push(new Paragraph({
-                    children: [new TextRun("__________________________________________________________")],
-                    alignment: AlignmentType.CENTER,
-                    spacing: { after: 600 },
-                }));
-                docContent.push(new Paragraph({
-                    children: [new TextRun("__________________________________________________________")],
-                    alignment: AlignmentType.CENTER,
-                    spacing: { after: 600 },
-                }));
-            }
-            for (let index = 0; index < answerData.length; index++) {
-                try {
-                    const question = answerData[index];
-                    const questionNumber = `${index + 1}、`;
-                    const titleRuns = await parseRichTextToParagraphs(question.title);
-                    const titleParagraph = new Paragraph({
-                        children: [
-                            new TextRun({
-                                text: questionNumber,
-                                bold: true,
-                            }),
-                            ...titleRuns,
-                        ],
-                    });
-                    docContent.push(titleParagraph);
-                    switch (question.type) {
-                        case 1:
-                        case 2:
-                            {
-                                const options = question.answer_items.map((item, idx) => ({
-                                    letter: String.fromCharCode(65 + idx),
-                                    content: item.value,
+        for (let index = 0; index < answerData.length; index++) {
+            try {
+                const question = answerData[index];
+                const questionNumber = `${index + 1}、`;
+                const titleRuns = await parseRichTextToParagraphs(question.title);
+                const titleParagraph = new Paragraph({
+                    children: [
+                        new TextRun({
+                            text: questionNumber,
+                            bold: true,
+                        }),
+                        ...titleRuns,
+                    ],
+                });
+                docContent.push(titleParagraph);
+                switch (question.type) {
+                    case 1:
+                    case 2:
+                        {
+                            const options = question.answer_items.map((item, idx) => ({
+                                letter: String.fromCharCode(65 + idx),
+                                content: item.value,
+                            }));
+                            for (const option of options) {
+                                const optionRuns = await parseRichTextToParagraphs(option.content);
+                                docContent.push(new Paragraph({
+                                    children: [
+                                        new TextRun({ text: `${option.letter}. `, bold: true }),
+                                        ...optionRuns,
+                                    ],
                                 }));
-                                for (const option of options) {
-                                    const optionRuns = await parseRichTextToParagraphs(option.content);
-                                    docContent.push(new Paragraph({
-                                        children: [
-                                            new TextRun({ text: `${option.letter}. `, bold: true }),
-                                            ...optionRuns,
-                                        ],
-                                    }));
-                                }
-                                const correctOptions = question.answer_items
-                                    .map((item, idx) => (item.answer_checked === 2 ? String.fromCharCode(65 + idx) : null))
-                                    .filter(Boolean)
-                                    .join('');
-                                docContent.push(new Paragraph({ text: `答案：${correctOptions}`, spacing: { before: 100, after: 100 } }));
-                                if (question.description && question.description !== '{}' && !isEmptyRichText(question.description)) {
-                                    docContent.push(new Paragraph({
-                                        children: [new TextRun({ text: '解析：', bold: true })],
-                                        spacing: { before: 100, after: 0 },
-                                    }));
-                                    const descriptionParagraphs = await parseRichTextToParagraphs(question.description);
-                                    docContent.push(...descriptionParagraphs);
-                                }
-                                break;
                             }
-                        case 5:
-                            {
-                                const isCorrect = question.answer_items.some(item => item.answer_checked === 2 && (item.value === '正确' || item.value.toLowerCase() === 'true'));
-                                docContent.push(new Paragraph({ text: `答案：${isCorrect ? '对' : '错'}`, spacing: { before: 100, after: 100 } }));
-                                if (question.description && question.description !== '{}' && !isEmptyRichText(question.description)) {
-                                    const descriptionRuns = await parseRichTextToParagraphs(question.description);
-                                    docContent.push(new Paragraph({
-                                        children: [
-                                            new TextRun({ text: '解析：', bold: true }),
-                                            ...descriptionRuns,
-                                        ],
-                                        spacing: { before: 100, after: 100 },
-                                    }));
-                                }
-                                break;
+                            const correctOptions = question.answer_items
+                            .map((item, idx) => (item.answer_checked === 2 ? String.fromCharCode(65 + idx) : null))
+                            .filter(Boolean)
+                            .join('');
+                            docContent.push(new Paragraph({ text: `答案：${correctOptions}`, spacing: { before: 100, after: 100 } }));
+                            if (question.description && question.description !== '{}' && !isEmptyRichText(question.description)) {
+                                docContent.push(new Paragraph({
+                                    children: [new TextRun({ text: '解析：', bold: true })],
+                                    spacing: { before: 100, after: 0 },
+                                }));
+                                const descriptionParagraphs = await parseRichTextToParagraphs(question.description);
+                                docContent.push(...descriptionParagraphs);
                             }
-                        case 4:
-                            {
-                                let blanks = '（____）'.repeat(question.answer_items.length);
-                                docContent.push(new Paragraph({ text: blanks, spacing: { before: 100, after: 100 } }));
-                                const answers = question.answer_items.map(item => parseRichTextToPlainText(item.answer)).join(' | ');
-                                docContent.push(new Paragraph({ text: `答案：${answers}`, spacing: { before: 100, after: 100 } }));
-                                if (question.description && question.description !== '{}' && !isEmptyRichText(question.description)) {
-                                    const descriptionRuns = await parseRichTextToParagraphs(question.description);
-                                    docContent.push(new Paragraph({
-                                        children: [
-                                            new TextRun({ text: '解析：', bold: true }),
-                                            ...descriptionRuns,
-                                        ],
-                                        spacing: { before: 100, after: 100 },
-                                    }));
-                                }
-                                break;
+                            break;
+                        }
+                    case 5:
+                        {
+                            const isCorrect = question.answer_items.some(item => item.answer_checked === 2 && (item.value === '正确' || item.value.toLowerCase() === 'true'));
+                            docContent.push(new Paragraph({ text: `答案：${isCorrect ? '对' : '错'}`, spacing: { before: 100, after: 100 } }));
+                            if (question.description && question.description !== '{}' && !isEmptyRichText(question.description)) {
+                                const descriptionRuns = await parseRichTextToParagraphs(question.description);
+                                docContent.push(new Paragraph({
+                                    children: [
+                                        new TextRun({ text: '解析：', bold: true }),
+                                        ...descriptionRuns,
+                                    ],
+                                    spacing: { before: 100, after: 100 },
+                                }));
                             }
-                        case 6:
-                            {
-                                for (const item of question.answer_items) {
-                                    const answerRuns = await parseRichTextToParagraphs(item.answer);
-                                    docContent.push(new Paragraph({
-                                        children: [
-                                            new TextRun({ text: '答案：', bold: true }),
-                                            ...answerRuns,
-                                        ],
-                                        spacing: { before: 100, after: 100 },
-                                    }));
-                                }
-                                if (question.description && question.description !== '{}' && !isEmptyRichText(question.description)) {
-                                    const descriptionRuns = await parseRichTextToParagraphs(question.description);
-                                    docContent.push(new Paragraph({
-                                        children: [
-                                            new TextRun({ text: '解析：', bold: true }),
-                                            ...descriptionRuns,
-                                        ],
-                                        spacing: { before: 100, after: 100 },
-                                    }));
-                                }
-                                break;
+                            break;
+                        }
+                    case 4:
+                        {
+                            let blanks = '（____）'.repeat(question.answer_items.length);
+                            docContent.push(new Paragraph({ text: blanks, spacing: { before: 100, after: 100 } }));
+                            const answers = question.answer_items.map(item => parseRichTextToPlainText(item.answer)).join(' | ');
+                            docContent.push(new Paragraph({ text: `答案：${answers}`, spacing: { before: 100, after: 100 } }));
+                            if (question.description && question.description !== '{}' && !isEmptyRichText(question.description)) {
+                                const descriptionRuns = await parseRichTextToParagraphs(question.description);
+                                docContent.push(new Paragraph({
+                                    children: [
+                                        new TextRun({ text: '解析：', bold: true }),
+                                        ...descriptionRuns,
+                                    ],
+                                    spacing: { before: 100, after: 100 },
+                                }));
                             }
-                        case 9:
-                            {
-                                if (question.subQuestions && question.subQuestions.length > 0) {
-                                    for (let subIndex = 0; subIndex < question.subQuestions.length; subIndex++) {
-                                        const subQuestion = question.subQuestions[subIndex];
-                                        const subQuestionNumber = `${index + 1}.${subIndex + 1}、`;
-                                        const subTitleRuns = await parseRichTextToParagraphs(subQuestion.title);
+                            break;
+                        }
+                    case 6:
+                        {
+                            for (const item of question.answer_items) {
+                                const answerRuns = await parseRichTextToParagraphs(item.answer);
+                                docContent.push(new Paragraph({
+                                    children: [
+                                        new TextRun({ text: '答案：', bold: true }),
+                                        ...answerRuns,
+                                    ],
+                                    spacing: { before: 100, after: 100 },
+                                }));
+                            }
+                            if (question.description && question.description !== '{}' && !isEmptyRichText(question.description)) {
+                                const descriptionRuns = await parseRichTextToParagraphs(question.description);
+                                docContent.push(new Paragraph({
+                                    children: [
+                                        new TextRun({ text: '解析：', bold: true }),
+                                        ...descriptionRuns,
+                                    ],
+                                    spacing: { before: 100, after: 100 },
+                                }));
+                            }
+                            break;
+                        }
+                    case 9:
+                        {
+                            if (question.subQuestions && question.subQuestions.length > 0) {
+                                for (let subIndex = 0; subIndex < question.subQuestions.length; subIndex++) {
+                                    const subQuestion = question.subQuestions[subIndex];
+                                    const subQuestionNumber = `${index + 1}.${subIndex + 1}、`;
+                                    const subTitleRuns = await parseRichTextToParagraphs(subQuestion.title);
+                                    docContent.push(
+                                        new Paragraph({
+                                            children: [
+                                                new TextRun({
+                                                    text: subQuestionNumber,
+                                                    bold: true,
+                                                }),
+                                                ...subTitleRuns
+                                            ],
+                                            spacing: { before: 200 }
+                                        })
+                                    );
+                                    switch (subQuestion.type) {
+                                        case 1:
+                                        case 2: {
+                                            for (const [idx, item] of subQuestion.answer_items.entries()) {
+                                                const optionLetter = String.fromCharCode(65 + idx);
+                                                const optionRuns = await parseRichTextToParagraphs(item.value);
+                                                const optionParagraph = new Paragraph({
+                                                    children: [
+                                                        new TextRun({
+                                                            text: `${optionLetter}. `,
+                                                            bold: true,
+                                                        }),
+                                                        ...optionRuns,
+                                                    ],
+                                                });
+                                                docContent.push(optionParagraph);
+                                            }
+                                            const correctOptions = subQuestion.answer_items
+                                            .map((item, idx) => item.answer_checked === 2 ? String.fromCharCode(65 + idx) : null)
+                                            .filter(item => item !== null)
+                                            .join('');
+                                            docContent.push(
+                                                new Paragraph({
+                                                    text: `答案：${correctOptions}`,
+                                                    spacing: { before: 100, after: 100 },
+                                                })
+                                            );
+                                            break;
+                                        }
+                                        case 4: {
+                                            const blankCount = subQuestion.answer_items.length;
+                                            let blanks = '';
+                                            for (let i = 0; i < blankCount; i++) {
+                                                blanks += '（____）';
+                                            }
+                                            docContent.push(
+                                                new Paragraph({
+                                                    text: blanks,
+                                                    spacing: { before: 100, after: 100 }
+                                                })
+                                            );
+                                            const answers = subQuestion.answer_items
+                                            .map(item => parseRichTextToPlainText(item.answer))
+                                            .join('|');
+                                            docContent.push(
+                                                new Paragraph({
+                                                    text: `答案：${answers}`,
+                                                    spacing: { before: 100, after: 100 }
+                                                })
+                                            );
+                                            break;
+                                        }
+                                        case 5: {
+                                            const isCorrect = subQuestion.answer_items
+                                            .some(item => item.answer_checked === 2 &&
+                                                  (item.value === '正确' || item.value.toLowerCase() === 'true'));
+                                            const answerText = isCorrect ? '对' : '错';
+                                            docContent.push(
+                                                new Paragraph({
+                                                    text: `答案：${answerText}`,
+                                                    spacing: { before: 100, after: 100 }
+                                                })
+                                            );
+                                            break;
+                                        }
+                                        case 6: {
+                                            const answers = subQuestion.answer_items
+                                            .map(item => parseRichTextToPlainText(item.answer))
+                                            .join('；');
+                                            docContent.push(
+                                                new Paragraph({
+                                                    text: `答案：${answers}`,
+                                                    spacing: { before: 100, after: 100 }
+                                                })
+                                            );
+                                            break;
+                                        }
+                                    }
+                                    if (subQuestion.description && subQuestion.description !== '{}') {
+                                        const descriptionRuns = await parseRichTextToParagraphs(subQuestion.description);
                                         docContent.push(
                                             new Paragraph({
                                                 children: [
                                                     new TextRun({
-                                                        text: subQuestionNumber,
-                                                        bold: true,
+                                                        text: '解析：',
+                                                        bold: true
                                                     }),
-                                                    ...subTitleRuns
+                                                    ...descriptionRuns
                                                 ],
-                                                spacing: { before: 200 }
-                                            })
-                                        );
-                                        switch (subQuestion.type) {
-                                            case 1:
-                                            case 2: {
-                                                for (const [idx, item] of subQuestion.answer_items.entries()) {
-                                                    const optionLetter = String.fromCharCode(65 + idx);
-                                                    const optionRuns = await parseRichTextToParagraphs(item.value);
-                                                    const optionParagraph = new Paragraph({
-                                                        children: [
-                                                            new TextRun({
-                                                                text: `${optionLetter}. `,
-                                                                bold: true,
-                                                            }),
-                                                            ...optionRuns,
-                                                        ],
-                                                    });
-                                                    docContent.push(optionParagraph);
-                                                }
-                                                const correctOptions = subQuestion.answer_items
-                                                    .map((item, idx) => item.answer_checked === 2 ? String.fromCharCode(65 + idx) : null)
-                                                    .filter(item => item !== null)
-                                                    .join('');
-                                                docContent.push(
-                                                    new Paragraph({
-                                                        text: `答案：${correctOptions}`,
-                                                        spacing: { before: 100, after: 100 },
-                                                    })
-                                                );
-                                                break;
-                                            }
-                                            case 4: {
-                                                const blankCount = subQuestion.answer_items.length;
-                                                let blanks = '';
-                                                for (let i = 0; i < blankCount; i++) {
-                                                    blanks += '（____）';
-                                                }
-                                                docContent.push(
-                                                    new Paragraph({
-                                                        text: blanks,
-                                                        spacing: { before: 100, after: 100 }
-                                                    })
-                                                );
-                                                const answers = subQuestion.answer_items
-                                                    .map(item => parseRichTextToPlainText(item.answer))
-                                                    .join('|');
-                                                docContent.push(
-                                                    new Paragraph({
-                                                        text: `答案：${answers}`,
-                                                        spacing: { before: 100, after: 100 }
-                                                    })
-                                                );
-                                                break;
-                                            }
-                                            case 5: {
-                                                const isCorrect = subQuestion.answer_items
-                                                    .some(item => item.answer_checked === 2 &&
-                                                        (item.value === '正确' || item.value.toLowerCase() === 'true'));
-                                                const answerText = isCorrect ? '对' : '错';
-                                                docContent.push(
-                                                    new Paragraph({
-                                                        text: `答案：${answerText}`,
-                                                        spacing: { before: 100, after: 100 }
-                                                    })
-                                                );
-                                                break;
-                                            }
-                                            case 6: {
-                                                const answers = subQuestion.answer_items
-                                                    .map(item => parseRichTextToPlainText(item.answer))
-                                                    .join('；');
-                                                docContent.push(
-                                                    new Paragraph({
-                                                        text: `答案：${answers}`,
-                                                        spacing: { before: 100, after: 100 }
-                                                    })
-                                                );
-                                                break;
-                                            }
-                                        }
-                                        if (subQuestion.description && subQuestion.description !== '{}') {
-                                            const descriptionRuns = await parseRichTextToParagraphs(subQuestion.description);
-                                            docContent.push(
-                                                new Paragraph({
-                                                    children: [
-                                                        new TextRun({
-                                                            text: '解析：',
-                                                            bold: true
-                                                        }),
-                                                        ...descriptionRuns
-                                                    ],
-                                                    spacing: { before: 100, after: 100 }
-                                                })
-                                            );
-                                        }
-                                        docContent.push(
-                                            new Paragraph({
-                                                text: '',
-                                                spacing: { after: 200 }
+                                                spacing: { before: 100, after: 100 }
                                             })
                                         );
                                     }
+                                    docContent.push(
+                                        new Paragraph({
+                                            text: '',
+                                            spacing: { after: 200 }
+                                        })
+                                    );
                                 }
-                                break;
                             }
-                        case 10:
-                            {
+                            break;
+                        }
+                    case 10:
+                        {
+                            docContent.push(
+                                new Paragraph({
+                                    text: `语言：${question.program_setting?.language?.join(', ') || '未指定'}`,
+                                    spacing: { before: 100, after: 100 },
+                                })
+                            );
+                            if (question.program_setting?.example_code) {
                                 docContent.push(
-                                    new Paragraph({
-                                        text: `语言：${question.program_setting?.language?.join(', ') || '未指定'}`,
-                                        spacing: { before: 100, after: 100 },
-                                    })
+                                    new Paragraph({ text: "示例代码：", bold: true, spacing: { before: 100 } }),
+                                    new Paragraph({ text: question.program_setting.example_code, style: "CodeStyle" })
                                 );
-                                if (question.program_setting?.example_code) {
-                                    docContent.push(
-                                        new Paragraph({ text: "示例代码：", bold: true, spacing: { before: 100 } }),
-                                        new Paragraph({ text: question.program_setting.example_code, style: "CodeStyle" })
-                                    );
-                                }
-                                if (question.program_setting?.code_answer) {
-                                    docContent.push(
-                                        new Paragraph({ text: "答案代码：", bold: true, spacing: { before: 100 } }),
-                                        new Paragraph({ text: question.program_setting.code_answer, style: "CodeStyle" })
-                                    );
-                                }
-                                if (question.answer_items?.[0]?.answer) {
-                                    try {
-                                        const testCases = JSON.parse(question.answer_items[0].answer);
-                                        if (Array.isArray(testCases) && testCases.length > 0) {
-                                            docContent.push(new Paragraph({ text: "测试用例：", bold: true, spacing: { before: 100 } }));
-                                            testCases.forEach((tc, i) => {
-                                                docContent.push(new Paragraph({ text: `  用例 ${i + 1}:`, spacing: { before: 50 } }));
-                                                docContent.push(new Paragraph({ text: `    输入: ${tc.in}`, style: "CodeStyle" }));
-                                                docContent.push(new Paragraph({ text: `    输出: ${tc.out}`, style: "CodeStyle" }));
-                                            });
-                                        }
-                                    } catch (e) {
-                                        console.warn("解析测试用例失败:", e);
-                                        docContent.push(new Paragraph({ text: `测试用例数据：${question.answer_items[0].answer}`, spacing: { before: 100 } }));
+                            }
+                            if (question.program_setting?.code_answer) {
+                                docContent.push(
+                                    new Paragraph({ text: "答案代码：", bold: true, spacing: { before: 100 } }),
+                                    new Paragraph({ text: question.program_setting.code_answer, style: "CodeStyle" })
+                                );
+                            }
+                            if (question.answer_items?.[0]?.answer) {
+                                try {
+                                    const testCases = JSON.parse(question.answer_items[0].answer);
+                                    if (Array.isArray(testCases) && testCases.length > 0) {
+                                        docContent.push(new Paragraph({ text: "测试用例：", bold: true, spacing: { before: 100 } }));
+                                        testCases.forEach((tc, i) => {
+                                            docContent.push(new Paragraph({ text: `  用例 ${i + 1}:`, spacing: { before: 50 } }));
+                                            docContent.push(new Paragraph({ text: `    输入: ${tc.in}`, style: "CodeStyle" }));
+                                            docContent.push(new Paragraph({ text: `    输出: ${tc.out}`, style: "CodeStyle" }));
+                                        });
                                     }
+                                } catch (e) {
+                                    console.warn("解析测试用例失败:", e);
+                                    docContent.push(new Paragraph({ text: `测试用例数据：${question.answer_items[0].answer}`, spacing: { before: 100 } }));
                                 }
-                                if (question.description && question.description !== '{}' && !isEmptyRichText(question.description)) {
-                                    const descriptionRuns = await parseRichTextToParagraphs(question.description);
-                                    const descriptionParagraph = new Paragraph({
-                                        children: [
-                                            new TextRun({ text: '解析：', bold: true }),
-                                            ...descriptionRuns,
-                                        ],
-                                        spacing: { before: 100, after: 100 },
-                                    });
-                                    docContent.push(descriptionParagraph);
-                                }
-                                break;
                             }
-                        case 12:
-                            {
-                                const options = question.answer_items.map((item, idx) => {
-                                    const optionLetter = String.fromCharCode(65 + idx);
-                                    return {
-                                        letter: optionLetter,
-                                        content: item.value,
-                                        originalIndex: idx,
-                                    };
+                            if (question.description && question.description !== '{}' && !isEmptyRichText(question.description)) {
+                                const descriptionRuns = await parseRichTextToParagraphs(question.description);
+                                const descriptionParagraph = new Paragraph({
+                                    children: [
+                                        new TextRun({ text: '解析：', bold: true }),
+                                        ...descriptionRuns,
+                                    ],
+                                    spacing: { before: 100, after: 100 },
                                 });
-                                for (const option of options) {
-                                    const optionRuns = await parseRichTextToParagraphs(option.content);
-                                    const optionParagraph = new Paragraph({
-                                        children: [
-                                            new TextRun({
-                                                text: `${option.letter}. `,
-                                                bold: true,
-                                            }),
-                                            ...optionRuns,
-                                        ],
-                                    });
-                                    docContent.push(optionParagraph);
-                                }
-                                const sortedItems = question.answer_items.slice().sort((a, b) => parseInt(a.answer) - parseInt(b.answer));
-                                const answerLetters = sortedItems.map(item => {
-                                    const originalIndex = question.answer_items.indexOf(item);
-                                    return String.fromCharCode(65 + originalIndex);
-                                }).join('');
-                                docContent.push(
-                                    new Paragraph({
-                                        text: `答案：${answerLetters}`,
-                                        spacing: { before: 100, after: 100 },
-                                    })
-                                );
-                                if (question.description && question.description !== '{}' && !isEmptyRichText(question.description)) {
-                                    const descriptionRuns = await parseRichTextToParagraphs(question.description);
-                                    const descriptionParagraph = new Paragraph({
-                                        children: [
-                                            new TextRun({
-                                                text: '解析：',
-                                                bold: true,
-                                            }),
-                                            ...descriptionRuns,
-                                        ],
-                                        spacing: { before: 100, after: 100 },
-                                    });
-                                    docContent.push(descriptionParagraph);
-                                }
-                                break;
+                                docContent.push(descriptionParagraph);
                             }
-                        case 13:
-                            {
-                                const leftItems = question.answer_items.filter(item => !item.is_target_opt);
-                                const rightItems = question.answer_items.filter(item => item.is_target_opt);
-                                docContent.push(new Paragraph({ text: "左侧选项：" }));
-                                leftItems.forEach((leftItem, index) => {
-                                    const leftContent = parseRichTextToPlainText(leftItem.value);
-                                    docContent.push(new Paragraph({
-                                        text: `左${index + 1}：${leftContent}`,
-                                    }));
+                            break;
+                        }
+                    case 12:
+                        {
+                            const options = question.answer_items.map((item, idx) => {
+                                const optionLetter = String.fromCharCode(65 + idx);
+                                return {
+                                    letter: optionLetter,
+                                    content: item.value,
+                                    originalIndex: idx,
+                                };
+                            });
+                            for (const option of options) {
+                                const optionRuns = await parseRichTextToParagraphs(option.content);
+                                const optionParagraph = new Paragraph({
+                                    children: [
+                                        new TextRun({
+                                            text: `${option.letter}. `,
+                                            bold: true,
+                                        }),
+                                        ...optionRuns,
+                                    ],
                                 });
-                                docContent.push(new Paragraph({ text: "右侧选项：" }));
-                                rightItems.forEach((rightItem, index) => {
-                                    const rightContent = parseRichTextToPlainText(rightItem.value);
-                                    docContent.push(new Paragraph({
-                                        text: `右${index + 1}：${rightContent}`,
-                                    }));
-                                });
-                                const answerText = '答案：' + leftItems.map((leftItem, leftIndex) => {
-                                    const leftOptionNumber = `左${leftIndex + 1}`;
-                                    const matchedRightIds = leftItem.answer ? leftItem.answer.toString().split(',') : [];
-                                    const matchedRightNumbers = matchedRightIds.map((id) => {
-                                        const rightIndex = rightItems.findIndex(item => item.id === id);
-                                        return rightIndex >= 0 ? `右${rightIndex + 1}` : '';
-                                    }).join('、');
-                                    return `${leftOptionNumber} - ${matchedRightNumbers}`;
-                                }).join('|');
-                                docContent.push(
-                                    new Paragraph({
-                                        text: answerText,
-                                        spacing: { before: 100, after: 100 },
-                                    })
-                                );
-                                if (question.description && question.description !== '{}' && !isEmptyRichText(question.description)) {
-                                    const descriptionRuns = await parseRichTextToParagraphs(question.description);
-                                    const descriptionParagraph = new Paragraph({
-                                        children: [
-                                            new TextRun({
-                                                text: '解析：',
-                                                bold: true,
-                                            }),
-                                            ...descriptionRuns,
-                                        ],
-                                        spacing: { before: 100, after: 100 },
-                                    });
-                                    docContent.push(descriptionParagraph);
-                                }
-                                break;
+                                docContent.push(optionParagraph);
                             }
-                        default:
-                            {
+                            const sortedItems = question.answer_items.slice().sort((a, b) => parseInt(a.answer) - parseInt(b.answer));
+                            const answerLetters = sortedItems.map(item => {
+                                const originalIndex = question.answer_items.indexOf(item);
+                                return String.fromCharCode(65 + originalIndex);
+                            }).join('');
+                            docContent.push(
+                                new Paragraph({
+                                    text: `答案：${answerLetters}`,
+                                    spacing: { before: 100, after: 100 },
+                                })
+                            );
+                            if (question.description && question.description !== '{}' && !isEmptyRichText(question.description)) {
+                                const descriptionRuns = await parseRichTextToParagraphs(question.description);
+                                const descriptionParagraph = new Paragraph({
+                                    children: [
+                                        new TextRun({
+                                            text: '解析：',
+                                            bold: true,
+                                        }),
+                                        ...descriptionRuns,
+                                    ],
+                                    spacing: { before: 100, after: 100 },
+                                });
+                                docContent.push(descriptionParagraph);
+                            }
+                            break;
+                        }
+                    case 13:
+                        {
+                            const leftItems = question.answer_items.filter(item => !item.is_target_opt);
+                            const rightItems = question.answer_items.filter(item => item.is_target_opt);
+                            docContent.push(new Paragraph({ text: "左侧选项：" }));
+                            leftItems.forEach((leftItem, index) => {
+                                const leftContent = parseRichTextToPlainText(leftItem.value);
                                 docContent.push(new Paragraph({
-                                    text: "该题型暂不支持查看答案。",
+                                    text: `左${index + 1}：${leftContent}`,
+                                }));
+                            });
+                            docContent.push(new Paragraph({ text: "右侧选项：" }));
+                            rightItems.forEach((rightItem, index) => {
+                                const rightContent = parseRichTextToPlainText(rightItem.value);
+                                docContent.push(new Paragraph({
+                                    text: `右${index + 1}：${rightContent}`,
+                                }));
+                            });
+                            const answerText = '答案：' + leftItems.map((leftItem, leftIndex) => {
+                                const leftOptionNumber = `左${leftIndex + 1}`;
+                                const matchedRightIds = leftItem.answer ? leftItem.answer.toString().split(',') : [];
+                                const matchedRightNumbers = matchedRightIds.map((id) => {
+                                    const rightIndex = rightItems.findIndex(item => item.id === id);
+                                    return rightIndex >= 0 ? `右${rightIndex + 1}` : '';
+                                }).join('、');
+                                return `${leftOptionNumber} - ${matchedRightNumbers}`;
+                            }).join('|');
+                            docContent.push(
+                                new Paragraph({
+                                    text: answerText,
+                                    spacing: { before: 100, after: 100 },
+                                })
+                            );
+                            if (question.description && question.description !== '{}' && !isEmptyRichText(question.description)) {
+                                const descriptionRuns = await parseRichTextToParagraphs(question.description);
+                                const descriptionParagraph = new Paragraph({
+                                    children: [
+                                        new TextRun({
+                                            text: '解析：',
+                                            bold: true,
+                                        }),
+                                        ...descriptionRuns,
+                                    ],
+                                    spacing: { before: 100, after: 100 },
+                                });
+                                docContent.push(descriptionParagraph);
+                            }
+                            break;
+                        }
+                    default:
+                        {
+                            docContent.push(new Paragraph({
+                                text: "该题型暂不支持查看答案。",
+                                spacing: { before: 100, after: 100 },
+                            }));
+                            if (question.description && question.description !== '{}' && !isEmptyRichText(question.description)) {
+                                const descriptionRuns = await parseRichTextToParagraphs(question.description);
+                                docContent.push(new Paragraph({
+                                    children: [
+                                        new TextRun({ text: '解析：', bold: true }),
+                                        ...descriptionRuns,
+                                    ],
                                     spacing: { before: 100, after: 100 },
                                 }));
-                                if (question.description && question.description !== '{}' && !isEmptyRichText(question.description)) {
-                                    const descriptionRuns = await parseRichTextToParagraphs(question.description);
-                                    docContent.push(new Paragraph({
-                                        children: [
-                                            new TextRun({ text: '解析：', bold: true }),
-                                            ...descriptionRuns,
-                                        ],
-                                        spacing: { before: 100, after: 100 },
-                                    }));
-                                }
-                                break;
                             }
-                    }
-                } catch (questionError) {
-                    console.error(`处理第 ${index + 1} 题时发生错误:`, questionError, "题目数据:", answerData[index]);
-                    docContent.push(new Paragraph({
-                        children: [
-                            new TextRun({ text: `${index + 1}、`, bold: true }),
-                            new TextRun({
-                                text: "处理此题时发生错误，已跳过。请打开浏览器控制台(F12)查看详细错误信息。",
-                                color: "FF0000",
-                                italics: true
-                            })
-                        ]
-                    }));
+                            break;
+                        }
                 }
-                progress.update(index + 1, answerData.length, '正在导出');
-                docContent.push(new Paragraph({ text: "", spacing: { after: 200 } }));
+            } catch (questionError) {
+                console.error(`处理第 ${index + 1} 题时发生错误:`, questionError, "题目数据:", answerData[index]);
+                docContent.push(new Paragraph({
+                    children: [
+                        new TextRun({ text: `${index + 1}、`, bold: true }),
+                        new TextRun({
+                            text: "处理此题时发生错误，已跳过。请打开浏览器控制台(F12)查看详细错误信息。",
+                            color: "FF0000",
+                            italics: true
+                        })
+                    ]
+                }));
             }
-            console.log("所有题目处理完毕，准备生成文档...");
-            progress.update(answerData.length, answerData.length, '正在生成文档');
-            const doc = new Document({
-                creator: "小雅答答答",
-                description: `导出的作业答案 - ${assignmentTitle}`,
-                title: assignmentTitle,
-                styles: {
-                    paragraphStyles: [
-                        {
-                            id: "Normal",
-                            name: "Normal",
-                            run: { font: "Microsoft YaHei", size: 24 },
-                            paragraph: { spacing: { line: 360, before: 0, after: 0 } },
-                        },
-                        {
-                            id: "Heading1",
-                            name: "Heading 1",
-                            basedOn: "Normal",
-                            next: "Normal",
-                            run: { font: "Microsoft YaHei", size: 32, bold: true },
-                            paragraph: { spacing: { before: 240, after: 120 } },
-                        },
-                        {
-                            id: "CodeStyle",
-                            name: "Code Style",
-                            basedOn: "Normal",
-                            run: { font: "Consolas", size: 20 },
-                            paragraph: {
-                                indentation: { left: 400 },
-                                spacing: { before: 100, after: 100 }
-                            },
-                        },
-                    ],
-                },
-                sections: [
+            progress.update(index + 1, answerData.length, '正在导出');
+            docContent.push(new Paragraph({ text: "", spacing: { after: 200 } }));
+        }
+        console.log("所有题目处理完毕，准备生成文档...");
+        progress.update(answerData.length, answerData.length, '正在生成文档');
+        const doc = new Document({
+            creator: "小雅答答答",
+            description: `导出的作业答案 - ${assignmentTitle}`,
+            title: assignmentTitle,
+            styles: {
+                paragraphStyles: [
                     {
-                        properties: {},
-                        children: docContent,
+                        id: "Normal",
+                        name: "Normal",
+                        run: { font: "Microsoft YaHei", size: 24 },
+                        paragraph: { spacing: { line: 360, before: 0, after: 0 } },
+                    },
+                    {
+                        id: "Heading1",
+                        name: "Heading 1",
+                        basedOn: "Normal",
+                        next: "Normal",
+                        run: { font: "Microsoft YaHei", size: 32, bold: true },
+                        paragraph: { spacing: { before: 240, after: 120 } },
+                    },
+                    {
+                        id: "CodeStyle",
+                        name: "Code Style",
+                        basedOn: "Normal",
+                        run: { font: "Consolas", size: 20 },
+                        paragraph: {
+                            indentation: { left: 400 },
+                            spacing: { before: 100, after: 100 }
+                        },
                     },
                 ],
-            });
-            const blob = await Packer.toBlob(doc);
-            let safeTitle = assignmentTitle.replace(/[\\/:*?"<>|]/g, '_');
-            window.saveAs(blob, `${safeTitle}.docx`);
-            progress.hide();
-            showNotification('作业导出成功,如需导入其他题库，请手动编辑保存一次以确保被准确识别。', {
-                type: 'success',
-                keywords: ['导出', '成功', '题库'],
-                animation: 'fadeSlide'
-            });
-        } catch (error) {
-            progress.hide();
-            console.error('导出作业时发生严重错误 (非题目处理阶段):', error);
-            showNotification('导出失败，请查看控制台日志以获取详细信息。', {
-                type: 'error',
-                keywords: ['导出', '失败', '日志'],
-                animation: 'scale'
-            });
-        }
+            },
+            sections: [
+                {
+                    properties: {},
+                    children: docContent,
+                },
+            ],
+        });
+        const blob = await Packer.toBlob(doc);
+        let safeTitle = assignmentTitle.replace(/[\\/:*?"<>|]/g, '_');
+        window.saveAs(blob, `${safeTitle}.docx`);
+        progress.hide();
+        showNotification('作业导出成功,如需导入其他题库，请手动编辑保存一次以确保被准确识别。', {
+            type: 'success',
+            keywords: ['导出', '成功', '题库'],
+            animation: 'fadeSlide'
+        });
+    } catch (error) {
+        progress.hide();
+        console.error('导出作业时发生严重错误 (非题目处理阶段):', error);
+        showNotification('导出失败，请查看控制台日志以获取详细信息。', {
+            type: 'error',
+            keywords: ['导出', '失败', '日志'],
+            animation: 'scale'
+        });
     }
-    async function parseRichTextToParagraphs(content) {
-        if (!content || typeof content !== 'string' || content === '{}' || isEmptyRichText(content)) {
-            return [];
-        }
-        let paragraphs = [];
+}
+async function parseRichTextToParagraphs(content) {
+    if (!content || typeof content !== 'string' || content === '{}' || isEmptyRichText(content)) {
+        return [];
+    }
+    let paragraphs = [];
+    try {
+        let jsonContent;
         try {
-            let jsonContent;
-            try {
-                jsonContent = JSON.parse(content);
-            } catch (parseError) {
-                const sanitizedContent = content.replace(/[\x00-\x1F\x7F\u200B-\u200D\uFEFF]/g, '');
-                if (sanitizedContent) {
-                    paragraphs.push(new Paragraph({
-                        children: [new TextRun({ text: sanitizedContent, font: "Microsoft YaHei" })],
-                    }));
-                }
-                return paragraphs;
-            }
-            if (!jsonContent.blocks || !Array.isArray(jsonContent.blocks)) {
+            jsonContent = JSON.parse(content);
+        } catch (parseError) {
+            const sanitizedContent = content.replace(/[\x00-\x1F\x7F\u200B-\u200D\uFEFF]/g, '');
+            if (sanitizedContent) {
                 paragraphs.push(new Paragraph({
-                    children: [new TextRun({ text: content, font: "Microsoft YaHei" })],
+                    children: [new TextRun({ text: sanitizedContent, font: "Microsoft YaHei" })],
                 }));
-                return paragraphs;
             }
-            for (const block of jsonContent.blocks) {
-                if (block.type === 'atomic' && block.data && block.data.type === 'IMAGE') {
-                    let imageSrc = block.data.src;
-                    let fileIdMatch = imageSrc.match(/.*cloud\/file_access\/(\d+)/);
-                    if (fileIdMatch && fileIdMatch[1]) {
-                        let fileId = fileIdMatch[1];
-                        let randomParam = Date.now();
-                        let imageUrl = `${window.location.origin}/api/jx-oresource/cloud/file_access/${fileId}?random=${randomParam}`;
-                        const imageData = await fetchImageData(imageUrl);
-                        if (imageData) {
-                            const imageSize = await getImageSize(imageData);
-                            if (imageSize) {
-                                let { width, height } = imageSize;
-                                const maxWidth = 450;
-                                if (width > maxWidth) {
-                                    const ratio = maxWidth / width;
-                                    width = maxWidth;
-                                    height = height * ratio;
-                                }
-                                paragraphs.push(new Paragraph({
-                                    children: [new ImageRun({
-                                        data: imageData,
-                                        transformation: { width, height },
-                                    })],
-                                    alignment: AlignmentType.CENTER,
-                                }));
-                            } else {
-                                paragraphs.push(new Paragraph({ text: '[图片加载失败]' }));
+            return paragraphs;
+        }
+        if (!jsonContent.blocks || !Array.isArray(jsonContent.blocks)) {
+            paragraphs.push(new Paragraph({
+                children: [new TextRun({ text: content, font: "Microsoft YaHei" })],
+            }));
+            return paragraphs;
+        }
+        for (const block of jsonContent.blocks) {
+            if (block.type === 'atomic' && block.data && block.data.type === 'IMAGE') {
+                let imageSrc = block.data.src;
+                let fileIdMatch = imageSrc.match(/.*cloud\/file_access\/(\d+)/);
+                if (fileIdMatch && fileIdMatch[1]) {
+                    let fileId = fileIdMatch[1];
+                    let randomParam = Date.now();
+                    let imageUrl = `${window.location.origin}/api/jx-oresource/cloud/file_access/${fileId}?random=${randomParam}`;
+                    const imageData = await fetchImageData(imageUrl);
+                    if (imageData) {
+                        const imageSize = await getImageSize(imageData);
+                        if (imageSize) {
+                            let { width, height } = imageSize;
+                            const maxWidth = 450;
+                            if (width > maxWidth) {
+                                const ratio = maxWidth / width;
+                                width = maxWidth;
+                                height = height * ratio;
                             }
+                            paragraphs.push(new Paragraph({
+                                children: [new ImageRun({
+                                    data: imageData,
+                                    transformation: { width, height },
+                                })],
+                                alignment: AlignmentType.CENTER,
+                            }));
                         } else {
                             paragraphs.push(new Paragraph({ text: '[图片加载失败]' }));
                         }
                     } else {
-                        paragraphs.push(new Paragraph({ text: '[无法解析图片链接]' }));
+                        paragraphs.push(new Paragraph({ text: '[图片加载失败]' }));
                     }
                 } else {
-                    const sanitizedText = (block.text || '').replace(/[\x00-\x1F\x7F]/g, '');
-                    paragraphs.push(new Paragraph({
-                        children: [new TextRun({
-                            text: sanitizedText,
-                            font: "Microsoft YaHei",
-                            eastAsia: "Microsoft YaHei"
-                        })],
-                    }));
+                    paragraphs.push(new Paragraph({ text: '[无法解析图片链接]' }));
                 }
-            }
-        } catch (e) {
-            console.error("解析富文本到段落时出错:", e, "原始内容:", content);
-            const sanitizedContent = content.replace(/[\x00-\x1F\x7F\u200B-\u200D\uFEFF]/g, '');
-            if (sanitizedContent) {
+            } else {
+                const sanitizedText = (block.text || '').replace(/[\x00-\x1F\x7F]/g, '');
                 paragraphs.push(new Paragraph({
-                    children: [new TextRun({ text: `[解析错误] ${sanitizedContent}`, font: "Microsoft YaHei" })],
+                    children: [new TextRun({
+                        text: sanitizedText,
+                        font: "Microsoft YaHei",
+                        eastAsia: "Microsoft YaHei"
+                    })],
                 }));
             }
         }
-        return paragraphs;
-    }
-    function parseRichTextToPlainText(content) {
-        if (!content) return '';
-        try {
-            const jsonContent = JSON.parse(content);
-            if (jsonContent && Array.isArray(jsonContent.blocks)) {
-                return jsonContent.blocks.map(block => block.text || '').join('\n').trim();
-            }
-        } catch (e) {
-        }
-        return String(content).trim();
-    }
-    function deepParseJsonString(str) {
-        if (typeof str !== 'string' || str.trim() === '') {
-            return str;
-        }
-        try {
-            const parsed = JSON.parse(str);
-            if (typeof parsed === 'string') {
-                return deepParseJsonString(parsed);
-            }
-            if (typeof parsed === 'object' && parsed !== null) {
-                if (Array.isArray(parsed.blocks) && parsed.blocks.length > 0 && parsed.blocks[0].text) {
-                    const innerText = parsed.blocks[0].text;
-                    if (typeof innerText === 'string' && innerText.startsWith('{') && innerText.endsWith('}')) {
-                        return deepParseJsonString(innerText);
-                    }
-                }
-            }
-            return parsed;
-        } catch (e) {
-            return str;
-        }
-    }
-    async function parseRichTextToMultimodalContent(richTextContent) {
-        const content = [];
-        if (!richTextContent || richTextContent === '{}') return content;
-        try {
-            const jsonContent = JSON.parse(richTextContent);
-            if (!jsonContent || !Array.isArray(jsonContent.blocks)) {
-                content.push({ type: 'text', text: String(richTextContent) });
-                return content;
-            }
-            for (const block of jsonContent.blocks) {
-                if (block.text) {
-                    content.push({ type: 'text', text: block.text });
-                }
-                if (block.type === 'atomic' && block.data?.type === 'IMAGE' && block.data.src) {
-                    let imageSrc = block.data.src;
-                    let fileIdMatch = imageSrc.match(/.*cloud\/file_access\/(\d+)/);
-                    if (fileIdMatch && fileIdMatch[1]) {
-                        let fileId = fileIdMatch[1];
-                        let randomParam = Date.now();
-                        let imageUrl = `${window.location.origin}/api/jx-oresource/cloud/file_access/${fileId}?random=${randomParam}`;
-                        const base64Data = await imageToBase64(imageUrl);
-                        if (base64Data) {
-                            content.push({ type: 'image_url', image_url: { url: base64Data } });
-                        } else {
-                            content.push({ type: 'text', text: '[图片加载失败]' });
-                        }
-                    } else {
-                        console.warn('[Vision] 无法从src中解析出图片fileId:', imageSrc);
-                        content.push({ type: 'text', text: '[无法解析图片链接]' });
-                    }
-                }
-            }
-        } catch (e) {
-            content.push({ type: 'text', text: String(richTextContent) });
-        }
-        if (content.length <= 1) return content;
-        const mergedContent = [];
-        let textBuffer = '';
-        for (const item of content) {
-            if (item.type === 'text') {
-                textBuffer += (textBuffer ? '\n' : '') + item.text;
-            } else {
-                if (textBuffer) {
-                    mergedContent.push({ type: 'text', text: textBuffer.trim() });
-                    textBuffer = '';
-                }
-                mergedContent.push(item);
-            }
-        }
-        if (textBuffer) {
-            mergedContent.push({ type: 'text', text: textBuffer.trim() });
-        }
-        return mergedContent;
-    }
-    async function imageToBase64(url) {
-        try {
-            const response = await fetch(url);
-            if (!response.ok) {
-                console.error(`获取图片失败: ${response.status} ${response.statusText}`, url);
-                return null;
-            }
-            const blob = await response.blob();
-            return new Promise((resolve, reject) => {
-                const reader = new FileReader();
-                reader.onloadend = () => resolve(reader.result);
-                reader.onerror = reject;
-                reader.readAsDataURL(blob);
-            });
-        } catch (error) {
-            console.error("图片转Base64时发生错误:", error, url);
-            return null;
-        }
-    }
-    async function videoToBase64(url, forcedMimeType = null, onProgress = null) {
-        try {
-            const arrayBuffer = await gmFetch(url, onProgress);
-            const blob = new Blob([arrayBuffer]);
-            const finalMimeType = forcedMimeType || blob.type || (url.includes('.mp3') ? 'audio/mp3' : 'video/mp4');
-            return new Promise((resolve, reject) => {
-                const reader = new FileReader();
-                reader.onloadend = () => {
-                    const base64String = reader.result.split(',')[1];
-                    resolve({ base64: base64String, mimeType: finalMimeType });
-                };
-                reader.onerror = reject;
-                reader.readAsDataURL(blob);
-            });
-        } catch (error) {
-            console.error("媒体文件转Base64时发生错误 (使用gmFetch):", error, url);
-            return null;
-        }
-    }
-    const getCanonicalContent = (richText) => {
-        const cleanAndNormalize = (str) => {
-            if (typeof str !== 'string') return '';
-            return str.replace(/<[^>]+>/g, '')
-                .replace(/[\u200B-\u200D\uFEFF]/g, '')
-                .trim()
-                .replace(/\s+/g, ' ');
-        };
-        if (typeof richText !== 'string' || richText.trim() === '') return '';
-        try {
-            const jsonContent = JSON.parse(richText);
-            if (jsonContent && Array.isArray(jsonContent.blocks)) {
-                const content = jsonContent.blocks.map(block => {
-                    if (block.type === 'atomic' && block.data) {
-                        if (block.data.type === 'IMAGE' && block.data.src) {
-                            const fileIdMatch = block.data.src.match(/file_access\/(\d+)/);
-                            return fileIdMatch ? `[IMAGE:${fileIdMatch[1]}]` : '';
-                        }
-                        if (block.data.type === 'AUDIO' && block.data.data?.quote_id) {
-                            return `[AUDIO:${block.data.data.quote_id}]`;
-                        }
-                    }
-                    return block.text || '';
-                }).join('');
-                return cleanAndNormalize(content);
-            }
-        } catch (e) {
-            return cleanAndNormalize(richText);
-        }
-        return cleanAndNormalize(richText);
-    };
-    function generateContentHash(rawQuestionData) {
-        if (!rawQuestionData || typeof rawQuestionData !== 'object') {
-            return null;
-        }
-        const cleanQuestion = {
-            type: rawQuestionData.type,
-            title: rawQuestionData.title,
-            answer_items: [],
-            subQuestions: []
-        };
-        if (!cleanQuestion.type || typeof cleanQuestion.title === 'undefined' || cleanQuestion.title === null) {
-            console.warn("无法生成哈希：缺少 type 或 title 为 null/undefined", rawQuestionData);
-            return null;
-        }
-        const title = getCanonicalContent(cleanQuestion.title);
-        if (title === '' && (!Array.isArray(rawQuestionData.answer_items) || rawQuestionData.answer_items.length === 0)) {
-            console.warn("无法生成哈希：title 为空且没有 answer_items", rawQuestionData);
-            return null;
-        }
-        if (Array.isArray(rawQuestionData.answer_items)) {
-            cleanQuestion.answer_items = rawQuestionData.answer_items.map(item => ({
-                value: item.value,
-                is_target_opt: item.is_target_opt
+    } catch (e) {
+        console.error("解析富文本到段落时出错:", e, "原始内容:", content);
+        const sanitizedContent = content.replace(/[\x00-\x1F\x7F\u200B-\u200D\uFEFF]/g, '');
+        if (sanitizedContent) {
+            paragraphs.push(new Paragraph({
+                children: [new TextRun({ text: `[解析错误] ${sanitizedContent}`, font: "Microsoft YaHei" })],
             }));
         }
-        if (Array.isArray(rawQuestionData.subQuestions)) {
-            cleanQuestion.subQuestions = rawQuestionData.subQuestions.map(subQ => generateContentHash(subQ));
+    }
+    return paragraphs;
+}
+function parseRichTextToPlainText(content) {
+    if (!content) return '';
+    try {
+        const jsonContent = JSON.parse(content);
+        if (jsonContent && Array.isArray(jsonContent.blocks)) {
+            return jsonContent.blocks.map(block => block.text || '').join('\n').trim();
         }
-        const type = cleanQuestion.type;
-        let keyParts = [type, title];
-        if ([1, 2, 5, 12, 13].includes(type) && Array.isArray(cleanQuestion.answer_items)) {
-            if (type === 13) {
-                const leftOptions = cleanQuestion.answer_items.filter(item => !item.is_target_opt).map(item => getCanonicalContent(item.value)).sort();
-                const rightOptions = cleanQuestion.answer_items.filter(item => item.is_target_opt).map(item => getCanonicalContent(item.value)).sort();
-                keyParts.push('LEFT:', ...leftOptions, 'RIGHT:', ...rightOptions);
-            } else {
-                const sortedOptions = cleanQuestion.answer_items.map(item => getCanonicalContent(item.value)).sort();
-                keyParts.push(...sortedOptions);
+    } catch (e) {
+    }
+    return String(content).trim();
+}
+function deepParseJsonString(str) {
+    if (typeof str !== 'string' || str.trim() === '') {
+        return str;
+    }
+    try {
+        const parsed = JSON.parse(str);
+        if (typeof parsed === 'string') {
+            return deepParseJsonString(parsed);
+        }
+        if (typeof parsed === 'object' && parsed !== null) {
+            if (Array.isArray(parsed.blocks) && parsed.blocks.length > 0 && parsed.blocks[0].text) {
+                const innerText = parsed.blocks[0].text;
+                if (typeof innerText === 'string' && innerText.startsWith('{') && innerText.endsWith('}')) {
+                    return deepParseJsonString(innerText);
+                }
             }
         }
-        if (cleanQuestion.subQuestions.length > 0) {
-            keyParts.push('SUB:', ...cleanQuestion.subQuestions.filter(Boolean).sort());
+        return parsed;
+    } catch (e) {
+        return str;
+    }
+}
+async function parseRichTextToMultimodalContent(richTextContent) {
+    const content = [];
+    if (!richTextContent || richTextContent === '{}') return content;
+    try {
+        const jsonContent = JSON.parse(richTextContent);
+        if (!jsonContent || !Array.isArray(jsonContent.blocks)) {
+            content.push({ type: 'text', text: String(richTextContent) });
+            return content;
         }
-        const canonicalString = keyParts.join('|');
-        return md5(canonicalString);
-    }
-    async function getImageSize(imageData) {
-        return new Promise((resolve, reject) => {
-            const blob = new Blob([imageData]);
-            const url = URL.createObjectURL(blob);
-            const img = new Image();
-            img.onload = function () {
-                const width = img.width;
-                const height = img.height;
-                URL.revokeObjectURL(url);
-                resolve({ width, height });
-            };
-            img.onerror = function () {
-                URL.revokeObjectURL(url);
-                reject(new Error('无法加载图片'));
-            };
-            img.src = url;
-        });
-    }
-    async function fetchImageData(url) {
-        try {
-            const response = await fetch(url, {
-                method: 'GET'
-            });
-            if (response.ok) {
-                const blob = await response.blob();
-                return await blob.arrayBuffer();
-            } else {
-                console.error('获取图片失败：', response.statusText);
-                return null;
+        for (const block of jsonContent.blocks) {
+            if (block.text) {
+                content.push({ type: 'text', text: block.text });
             }
-        } catch (error) {
-            console.error('fetchImageData 错误:', error);
+            if (block.type === 'atomic' && block.data?.type === 'IMAGE' && block.data.src) {
+                let imageSrc = block.data.src;
+                let fileIdMatch = imageSrc.match(/.*cloud\/file_access\/(\d+)/);
+                if (fileIdMatch && fileIdMatch[1]) {
+                    let fileId = fileIdMatch[1];
+                    let randomParam = Date.now();
+                    let imageUrl = `${window.location.origin}/api/jx-oresource/cloud/file_access/${fileId}?random=${randomParam}`;
+                    const base64Data = await imageToBase64(imageUrl);
+                    if (base64Data) {
+                        content.push({ type: 'image_url', image_url: { url: base64Data } });
+                    } else {
+                        content.push({ type: 'text', text: '[图片加载失败]' });
+                    }
+                } else {
+                    console.warn('[Vision] 无法从src中解析出图片fileId:', imageSrc);
+                    content.push({ type: 'text', text: '[无法解析图片链接]' });
+                }
+            }
+        }
+    } catch (e) {
+        content.push({ type: 'text', text: String(richTextContent) });
+    }
+    if (content.length <= 1) return content;
+    const mergedContent = [];
+    let textBuffer = '';
+    for (const item of content) {
+        if (item.type === 'text') {
+            textBuffer += (textBuffer ? '\n' : '') + item.text;
+        } else {
+            if (textBuffer) {
+                mergedContent.push({ type: 'text', text: textBuffer.trim() });
+                textBuffer = '';
+            }
+            mergedContent.push(item);
+        }
+    }
+    if (textBuffer) {
+        mergedContent.push({ type: 'text', text: textBuffer.trim() });
+    }
+    return mergedContent;
+}
+async function imageToBase64(url) {
+    try {
+        const response = await fetch(url);
+        if (!response.ok) {
+            console.error(`获取图片失败: ${response.status} ${response.statusText}`, url);
             return null;
         }
+        const blob = await response.blob();
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onloadend = () => resolve(reader.result);
+            reader.onerror = reject;
+            reader.readAsDataURL(blob);
+        });
+    } catch (error) {
+        console.error("图片转Base64时发生错误:", error, url);
+        return null;
     }
-    async function checkAndExecuteAuto() {
-        if (isProcessing) {
+}
+async function videoToBase64(url, forcedMimeType = null, onProgress = null) {
+    try {
+        const arrayBuffer = await gmFetch(url, onProgress);
+        const blob = new Blob([arrayBuffer]);
+        const finalMimeType = forcedMimeType || blob.type || (url.includes('.mp3') ? 'audio/mp3' : 'video/mp4');
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onloadend = () => {
+                const base64String = reader.result.split(',')[1];
+                resolve({ base64: base64String, mimeType: finalMimeType });
+            };
+            reader.onerror = reject;
+            reader.readAsDataURL(blob);
+        });
+    } catch (error) {
+        console.error("媒体文件转Base64时发生错误 (使用gmFetch):", error, url);
+        return null;
+    }
+}
+const getCanonicalContent = (richText) => {
+    const cleanAndNormalize = (str) => {
+        if (typeof str !== 'string') return '';
+        return str.replace(/<[^>]+>/g, '')
+            .replace(/[\u200B-\u200D\uFEFF]/g, '')
+            .trim()
+            .replace(/\s+/g, ' ');
+    };
+    if (typeof richText !== 'string' || richText.trim() === '') return '';
+    try {
+        const jsonContent = JSON.parse(richText);
+        if (jsonContent && Array.isArray(jsonContent.blocks)) {
+            const content = jsonContent.blocks.map(block => {
+                if (block.type === 'atomic' && block.data) {
+                    if (block.data.type === 'IMAGE' && block.data.src) {
+                        const fileIdMatch = block.data.src.match(/file_access\/(\d+)/);
+                        return fileIdMatch ? `[IMAGE:${fileIdMatch[1]}]` : '';
+                    }
+                    if (block.data.type === 'AUDIO' && block.data.data?.quote_id) {
+                        return `[AUDIO:${block.data.data.quote_id}]`;
+                    }
+                }
+                return block.text || '';
+            }).join('');
+            return cleanAndNormalize(content);
+        }
+    } catch (e) {
+        return cleanAndNormalize(richText);
+    }
+    return cleanAndNormalize(richText);
+};
+function generateContentHash(rawQuestionData) {
+    if (!rawQuestionData || typeof rawQuestionData !== 'object') {
+        return null;
+    }
+    const cleanQuestion = {
+        type: rawQuestionData.type,
+        title: rawQuestionData.title,
+        answer_items: [],
+        subQuestions: []
+    };
+    if (!cleanQuestion.type || typeof cleanQuestion.title === 'undefined' || cleanQuestion.title === null) {
+        console.warn("无法生成哈希：缺少 type 或 title 为 null/undefined", rawQuestionData);
+        return null;
+    }
+    const title = getCanonicalContent(cleanQuestion.title);
+    if (title === '' && (!Array.isArray(rawQuestionData.answer_items) || rawQuestionData.answer_items.length === 0)) {
+        console.warn("无法生成哈希：title 为空且没有 answer_items", rawQuestionData);
+        return null;
+    }
+    if (Array.isArray(rawQuestionData.answer_items)) {
+        cleanQuestion.answer_items = rawQuestionData.answer_items.map(item => ({
+            value: item.value,
+            is_target_opt: item.is_target_opt
+        }));
+    }
+    if (Array.isArray(rawQuestionData.subQuestions)) {
+        cleanQuestion.subQuestions = rawQuestionData.subQuestions.map(subQ => generateContentHash(subQ));
+    }
+    const type = cleanQuestion.type;
+    let keyParts = [type, title];
+    if ([1, 2, 5, 12, 13].includes(type) && Array.isArray(cleanQuestion.answer_items)) {
+        if (type === 13) {
+            const leftOptions = cleanQuestion.answer_items.filter(item => !item.is_target_opt).map(item => getCanonicalContent(item.value)).sort();
+            const rightOptions = cleanQuestion.answer_items.filter(item => item.is_target_opt).map(item => getCanonicalContent(item.value)).sort();
+            keyParts.push('LEFT:', ...leftOptions, 'RIGHT:', ...rightOptions);
+        } else {
+            const sortedOptions = cleanQuestion.answer_items.map(item => getCanonicalContent(item.value)).sort();
+            keyParts.push(...sortedOptions);
+        }
+    }
+    if (cleanQuestion.subQuestions.length > 0) {
+        keyParts.push('SUB:', ...cleanQuestion.subQuestions.filter(Boolean).sort());
+    }
+    const canonicalString = keyParts.join('|');
+    return md5(canonicalString);
+}
+async function getImageSize(imageData) {
+    return new Promise((resolve, reject) => {
+        const blob = new Blob([imageData]);
+        const url = URL.createObjectURL(blob);
+        const img = new Image();
+        img.onload = function () {
+            const width = img.width;
+            const height = img.height;
+            URL.revokeObjectURL(url);
+            resolve({ width, height });
+        };
+        img.onerror = function () {
+            URL.revokeObjectURL(url);
+            reject(new Error('无法加载图片'));
+        };
+        img.src = url;
+    });
+}
+async function fetchImageData(url) {
+    try {
+        const response = await fetch(url, {
+            method: 'GET'
+        });
+        if (response.ok) {
+            const blob = await response.blob();
+            return await blob.arrayBuffer();
+        } else {
+            console.error('获取图片失败：', response.statusText);
+            return null;
+        }
+    } catch (error) {
+        console.error('fetchImageData 错误:', error);
+        return null;
+    }
+}
+async function checkAndExecuteAuto() {
+    if (isProcessing) {
+        return;
+    }
+    if (debounceTimer) {
+        clearTimeout(debounceTimer);
+    }
+    debounceTimer = setTimeout(async () => {
+        const nodeId = getNodeIDFromUrl(window.location.href);
+        const groupId = getGroupIDFromUrl(window.location.href);
+        const flagKey = `xiaoya_autofilled_${groupId}_${nodeId}`;
+        if (nodeId && groupId && sessionStorage.getItem(flagKey)) {
+            sessionStorage.removeItem(flagKey);
+            showNotification('自动填写完成。', { type: 'success' });
+            console.log('[自动执行] 检测到自动填写后的重载，本次跳过。');
             return;
         }
-        if (debounceTimer) {
-            clearTimeout(debounceTimer);
-        }
-        debounceTimer = setTimeout(async () => {
-            const nodeId = getNodeIDFromUrl(window.location.href);
-            const groupId = getGroupIDFromUrl(window.location.href);
-            const flagKey = `xiaoya_autofilled_${groupId}_${nodeId}`;
-            if (nodeId && groupId && sessionStorage.getItem(flagKey)) {
-                sessionStorage.removeItem(flagKey);
-                showNotification('自动填写完成。', { type: 'success' });
-                console.log('[自动执行] 检测到自动填写后的重载，本次跳过。');
-                return;
-            }
-            if (autoFetchEnabled && (await isTaskPage())) {
-                try {
-                    isProcessing = true;
-                    showNotification('正在自动获取答案...', {
-                        type: 'info',
-                        keywords: ['自动', '获取', '答案'],
-                        animation: 'fadeSlide'
-                    });
-                    await getAndStoreAnswers();
-                    if (autoFillEnabled) {
-                        await new Promise(resolve => setTimeout(resolve, 1000));
-                        await fillAnswers();
-                    }
-                } catch (error) {
-                    console.error('自动执行出错:', error);
-                } finally {
-                    isProcessing = false;
-                    debounceTimer = null;
+        if (autoFetchEnabled && (await isTaskPage())) {
+            try {
+                isProcessing = true;
+                showNotification('正在自动获取答案...', {
+                    type: 'info',
+                    keywords: ['自动', '获取', '答案'],
+                    animation: 'fadeSlide'
+                });
+                await getAndStoreAnswers();
+                if (autoFillEnabled) {
+                    await new Promise(resolve => setTimeout(resolve, 1000));
+                    await fillAnswers();
                 }
-            } else {
+            } catch (error) {
+                console.error('自动执行出错:', error);
+            } finally {
+                isProcessing = false;
                 debounceTimer = null;
             }
-        }, 500);
-    }
-    function detectPageChange() {
-        let lastUrl = location.href;
-        const observer = new MutationObserver(async () => {
-            if (location.href !== lastUrl) {
-                lastUrl = location.href;
-                isProcessing = false;
-                if (debounceTimer) {
-                    clearTimeout(debounceTimer);
-                    debounceTimer = null;
-                }
-                setTimeout(() => {
-                    checkAndExecuteAuto();
-                }, 1000);
-                if (autoContributeEnabled) {
-                    backgroundTaskManager.schedule();
-                }
-            }
-        });
-        observer.observe(document, {
-            subtree: true,
-            childList: true
-        });
-        checkAndExecuteAuto();
-        if (autoContributeEnabled) {
-            backgroundTaskManager.schedule();
+        } else {
+            debounceTimer = null;
         }
-    }
-    detectPageChange();
-    let modelListCache = {};
-    function renderSimpleMarkdown(text) {
-        if (!text) return '';
-        let html = text
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;');
-        html = html.replace(/^### (.*?)$/gm, '<h4>$1</h4>')
-            .replace(/^## (.*?)$/gm, '<h3>$1</h3>')
-            .replace(/^# (.*?)$/gm, '<h2>$1</h2>');
-        html = html.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
-        html = html.replace(/^[*\-]\s+(.*?)$/gm, '<li>$1</li>');
-        html = html.replace(/(<li>.*?<\/li>\s*)+/gs, (match) => `<ul>${match}</ul>`);
-        html = html.replace(/^\d+\.\s+(.*?)$/gm, '<li>$1</li>');
-        html = html.replace(/(<li>.*?<\/li>\s*)+/gs, (match) => {
-            if (match.includes('<ul>')) return match;
-            return `<ol>${match}</ol>`;
-        });
-        html = html.replace(/\n/g, '<br>');
-        html = html.replace(/<br>\s*<br>/g, '<br>');
-        html = html.replace(/^<br>|<br>$/g, '');
-        return html;
-    }
-    function showAISettingsPanel() {
-        const OPENAI_COMPATIBLE_PRESETS = [
-            {
-                "id": "custom",
-                "name": "自定义...",
-                "endpoint": "",
-                "domain": "openai.com",
-                "category": "Custom",
-                "notes": "手动输入任何兼容OpenAI接口的API地址。"
-            },
-            {
-                "id": "openai",
-                "name": "OpenAI (官方)",
-                "endpoint": "https://api.openai.com/v1/chat/completions",
-                "domain": "openai.com",
-                "category": "Official",
-                "notes": "使用OpenAI官方接口。"
-            },
-            {
-                "id": "siliconflow",
-                "name": "SiliconFlow (硅基流动)",
-                "endpoint": "https://api.siliconflow.cn/v1/chat/completions",
-                "domain": "siliconflow.cn",
-                "category": "Domestic",
-                "notes": "提供多种开源模型，非常推荐用于STT和Vision。"
-            },
-            {
-                "id": "deepseek",
-                "name": "DeepSeek (深度求索)",
-                "endpoint": "https://api.deepseek.com/v1/chat/completions",
-                "domain": "deepseek.com",
-                "category": "Domestic",
-                "notes": "国产顶尖模型，能力强，性价比高，支持RAG和复杂推理任务。"
-            },
-            {
-                "id": "glm",
-                "name": "智谱 GLM",
-                "endpoint": "https://open.bigmodel.cn/api/paas/v4/chat/completions",
-                "domain": "bigmodel.cn",
-                "category": "Domestic",
-                "notes": "清华系大模型，综合能力优秀，提供免费额度，适合学术和企业应用。"
-            },
-            {
-                "id": "stepfun",
-                "name": "阶跃星辰 (StepFun)",
-                "endpoint": "https://api.stepfun.com/v1/chat/completions",
-                "domain": "stepfun.com",
-                "category": "Domestic",
-                "notes": "前微软团队打造，专注于超级智能体，提供免费额度，适合复杂任务。"
-            },
-            {
-                "id": "ModelScope",
-                "name": "ModelScope 魔撘",
-                "endpoint": "https://api-inference.modelscope.cn/v1/chat/completions",
-                "domain": "modelscope.cn/",
-                "category": "Domestic",
-                "notes": "模型社区，支持多种开源模型推理，适合开发者实验和研究。"
-            },
-            {
-                "id": "groq",
-                "name": "Groq",
-                "endpoint": "https://api.groq.com/openai/v1/chat/completions",
-                "domain": "groq.com",
-                "category": "International",
-                "notes": "以极高的响应速度著称，提供多种开源模型，适合低延迟场景。"
-            },
-            {
-                "id": "together",
-                "name": "Together AI",
-                "endpoint": "https://api.together.xyz/v1/chat/completions",
-                "domain": "together.ai",
-                "category": "International",
-                "notes": "大型模型托管平台，提供海量开源模型选择，价格有竞争力，适合开发者。"
-            },
-            {
-                "id": "openrouter",
-                "name": "OpenRouter",
-                "endpoint": "https://openrouter.ai/api/v1/chat/completions",
-                "domain": "openrouter.ai",
-                "category": "Aggregator",
-                "notes": "模型中转，可通过一个API访问包括GPT、Claude在内的多种模型，简化集成。"
-            },
-            {
-                "id": "xai",
-                "name": "xAI (Grok)",
-                "endpoint": "https://api.x.ai/v1/chat/completions",
-                "domain": "x.ai",
-                "category": "International",
-                "notes": "xAI提供的Grok模型，专注于加速科学发现，适合研究和复杂推理。"
-            },
-            {
-                "id": "moonshot",
-                "name": "月之暗面 (Moonshot AI)",
-                "endpoint": "hhttps://api.moonshot.cn/v1/chat/completions",
-                "domain": "moonshot.cn",
-                "category": "Domestic",
-                "notes": "国产新兴大模型，专注长文本处理和知识密集型任务，性价比高。"
-            },
-            {
-                "id": "alibaba",
-                "name": "阿里云通义千问",
-                "endpoint": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
-                "domain": "aliyun.com",
-                "category": "Domestic",
-                "notes": "阿里巴巴旗下大模型，支持多模态输入，适合企业级应用，提供免费试用。"
-            },
-            {
-                "id": "nvidia",
-                "name": "NVIDIA",
-                "endpoint": "https://integrate.api.nvidia.com/v1/chat/completions",
-                "domain": "nvidia.com",
-                "category": "International",
-                "notes": "NVIDIA提供的AI推理平台，结合GPU加速，适合高性能计算任务。"
-            },
-            {
-                "id": "tencent",
-                "name": "腾讯混元",
-                "endpoint": "https://api.hunyuan.cloud.tencent.com/v1/chat/completions",
-                "domain": "cloud.tencent.com",
-                "category": "Domestic",
-                "notes": "腾讯自研大模型，专注于中文场景，适合企业级和多模态任务。"
-            },
-            {
-                "id": "yi",
-                "name": "零一万物 (Yi AI)",
-                "endpoint": "https://api.lingyiwanwu.com/v1/chat/completions",
-                "domain": "lingyiwanwu.com",
-                "category": "Domestic",
-                "notes": "国产开源大模型，性能强劲，适合开发者社区和定制化需求。"
+    }, 500);
+}
+function detectPageChange() {
+    let lastUrl = location.href;
+    const observer = new MutationObserver(async () => {
+        if (location.href !== lastUrl) {
+            lastUrl = location.href;
+            isProcessing = false;
+            if (debounceTimer) {
+                clearTimeout(debounceTimer);
+                debounceTimer = null;
             }
-        ];
-        function createCustomSelect(field, initialValue, onValueChange) {
-            const wrapper = document.createElement('div');
-            wrapper.className = 'custom-select-wrapper';
-            wrapper.id = field.id;
-            const trigger = document.createElement('div');
-            trigger.className = 'custom-select-trigger';
-            const selectedContent = document.createElement('div');
-            selectedContent.className = 'selected-option-content';
-            trigger.appendChild(selectedContent);
-            const arrow = document.createElement('div');
-            arrow.className = 'arrow';
-            trigger.appendChild(arrow);
-            const optionsContainer = document.createElement('div');
-            optionsContainer.className = 'custom-select-options';
-            wrapper.appendChild(trigger);
-            wrapper.appendChild(optionsContainer);
-            let currentValue = initialValue || '';
-            let currentOptions = field.options || [];
-            if (field.searchable) {
-                const searchInput = document.createElement('input');
-                searchInput.type = 'text';
-                searchInput.placeholder = '搜索或输入模型ID...';
-                searchInput.className = 'custom-select-search';
-                searchInput.style.cssText = `
+            setTimeout(() => {
+                checkAndExecuteAuto();
+            }, 1000);
+            if (autoContributeEnabled) {
+                backgroundTaskManager.schedule();
+            }
+        }
+    });
+    observer.observe(document, {
+        subtree: true,
+        childList: true
+    });
+    checkAndExecuteAuto();
+    if (autoContributeEnabled) {
+        backgroundTaskManager.schedule();
+    }
+}
+detectPageChange();
+let modelListCache = {};
+function renderSimpleMarkdown(text) {
+    if (!text) return '';
+    let html = text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+    html = html.replace(/^### (.*?)$/gm, '<h4>$1</h4>')
+        .replace(/^## (.*?)$/gm, '<h3>$1</h3>')
+        .replace(/^# (.*?)$/gm, '<h2>$1</h2>');
+    html = html.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+    html = html.replace(/^[*\-]\s+(.*?)$/gm, '<li>$1</li>');
+    html = html.replace(/(<li>.*?<\/li>\s*)+/gs, (match) => `<ul>${match}</ul>`);
+    html = html.replace(/^\d+\.\s+(.*?)$/gm, '<li>$1</li>');
+    html = html.replace(/(<li>.*?<\/li>\s*)+/gs, (match) => {
+        if (match.includes('<ul>')) return match;
+        return `<ol>${match}</ol>`;
+    });
+    html = html.replace(/\n/g, '<br>');
+    html = html.replace(/<br>\s*<br>/g, '<br>');
+    html = html.replace(/^<br>|<br>$/g, '');
+    return html;
+}
+function showAISettingsPanel() {
+    const OPENAI_COMPATIBLE_PRESETS = [
+        {
+            "id": "custom",
+            "name": "自定义...",
+            "endpoint": "",
+            "domain": "openai.com",
+            "category": "Custom",
+            "notes": "手动输入任何兼容OpenAI接口的API地址。"
+        },
+        {
+            "id": "openai",
+            "name": "OpenAI (官方)",
+            "endpoint": "https://api.openai.com/v1/chat/completions",
+            "domain": "openai.com",
+            "category": "Official",
+            "notes": "使用OpenAI官方接口。"
+        },
+        {
+            "id": "siliconflow",
+            "name": "SiliconFlow (硅基流动)",
+            "endpoint": "https://api.siliconflow.cn/v1/chat/completions",
+            "domain": "siliconflow.cn",
+            "category": "Domestic",
+            "notes": "提供多种开源模型，非常推荐用于STT和Vision。"
+        },
+        {
+            "id": "deepseek",
+            "name": "DeepSeek (深度求索)",
+            "endpoint": "https://api.deepseek.com/v1/chat/completions",
+            "domain": "deepseek.com",
+            "category": "Domestic",
+            "notes": "国产顶尖模型，能力强，性价比高，支持RAG和复杂推理任务。"
+        },
+        {
+            "id": "glm",
+            "name": "智谱 GLM",
+            "endpoint": "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+            "domain": "bigmodel.cn",
+            "category": "Domestic",
+            "notes": "清华系大模型，综合能力优秀，提供免费额度，适合学术和企业应用。"
+        },
+        {
+            "id": "stepfun",
+            "name": "阶跃星辰 (StepFun)",
+            "endpoint": "https://api.stepfun.com/v1/chat/completions",
+            "domain": "stepfun.com",
+            "category": "Domestic",
+            "notes": "前微软团队打造，专注于超级智能体，提供免费额度，适合复杂任务。"
+        },
+        {
+            "id": "ModelScope",
+            "name": "ModelScope 魔撘",
+            "endpoint": "https://api-inference.modelscope.cn/v1/chat/completions",
+            "domain": "modelscope.cn/",
+            "category": "Domestic",
+            "notes": "模型社区，支持多种开源模型推理，适合开发者实验和研究。"
+        },
+        {
+            "id": "groq",
+            "name": "Groq",
+            "endpoint": "https://api.groq.com/openai/v1/chat/completions",
+            "domain": "groq.com",
+            "category": "International",
+            "notes": "以极高的响应速度著称，提供多种开源模型，适合低延迟场景。"
+        },
+        {
+            "id": "together",
+            "name": "Together AI",
+            "endpoint": "https://api.together.xyz/v1/chat/completions",
+            "domain": "together.ai",
+            "category": "International",
+            "notes": "大型模型托管平台，提供海量开源模型选择，价格有竞争力，适合开发者。"
+        },
+        {
+            "id": "openrouter",
+            "name": "OpenRouter",
+            "endpoint": "https://openrouter.ai/api/v1/chat/completions",
+            "domain": "openrouter.ai",
+            "category": "Aggregator",
+            "notes": "模型中转，可通过一个API访问包括GPT、Claude在内的多种模型，简化集成。"
+        },
+        {
+            "id": "xai",
+            "name": "xAI (Grok)",
+            "endpoint": "https://api.x.ai/v1/chat/completions",
+            "domain": "x.ai",
+            "category": "International",
+            "notes": "xAI提供的Grok模型，专注于加速科学发现，适合研究和复杂推理。"
+        },
+        {
+            "id": "moonshot",
+            "name": "月之暗面 (Moonshot AI)",
+            "endpoint": "hhttps://api.moonshot.cn/v1/chat/completions",
+            "domain": "moonshot.cn",
+            "category": "Domestic",
+            "notes": "国产新兴大模型，专注长文本处理和知识密集型任务，性价比高。"
+        },
+        {
+            "id": "alibaba",
+            "name": "阿里云通义千问",
+            "endpoint": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+            "domain": "aliyun.com",
+            "category": "Domestic",
+            "notes": "阿里巴巴旗下大模型，支持多模态输入，适合企业级应用，提供免费试用。"
+        },
+        {
+            "id": "nvidia",
+            "name": "NVIDIA",
+            "endpoint": "https://integrate.api.nvidia.com/v1/chat/completions",
+            "domain": "nvidia.com",
+            "category": "International",
+            "notes": "NVIDIA提供的AI推理平台，结合GPU加速，适合高性能计算任务。"
+        },
+        {
+            "id": "tencent",
+            "name": "腾讯混元",
+            "endpoint": "https://api.hunyuan.cloud.tencent.com/v1/chat/completions",
+            "domain": "cloud.tencent.com",
+            "category": "Domestic",
+            "notes": "腾讯自研大模型，专注于中文场景，适合企业级和多模态任务。"
+        },
+        {
+            "id": "yi",
+            "name": "零一万物 (Yi AI)",
+            "endpoint": "https://api.lingyiwanwu.com/v1/chat/completions",
+            "domain": "lingyiwanwu.com",
+            "category": "Domestic",
+            "notes": "国产开源大模型，性能强劲，适合开发者社区和定制化需求。"
+        }
+    ];
+    function createCustomSelect(field, initialValue, onValueChange) {
+        const wrapper = document.createElement('div');
+        wrapper.className = 'custom-select-wrapper';
+        wrapper.id = field.id;
+        const trigger = document.createElement('div');
+        trigger.className = 'custom-select-trigger';
+        const selectedContent = document.createElement('div');
+        selectedContent.className = 'selected-option-content';
+        trigger.appendChild(selectedContent);
+        const arrow = document.createElement('div');
+        arrow.className = 'arrow';
+        trigger.appendChild(arrow);
+        const optionsContainer = document.createElement('div');
+        optionsContainer.className = 'custom-select-options';
+        wrapper.appendChild(trigger);
+        wrapper.appendChild(optionsContainer);
+        let currentValue = initialValue || '';
+        let currentOptions = field.options || [];
+        if (field.searchable) {
+            const searchInput = document.createElement('input');
+            searchInput.type = 'text';
+            searchInput.placeholder = '搜索或输入模型ID...';
+            searchInput.className = 'custom-select-search';
+            searchInput.style.cssText = `
                     width: calc(100% - 24px);
                     margin: 8px 12px;
                     padding: 8px 12px;
@@ -12892,31 +12981,31 @@
                                 signal: AbortSignal.timeout(15000)
                             })
                                 .then(response => {
-                                    if (response.ok) {
-                                        return response.json();
-                                    } else {
-                                        const errorMsg = `获取 OpenAI 模型列表失败 (${response.status})`;
-                                        showNotification(errorMsg, { type: 'error' });
-                                        throw new Error(errorMsg);
-                                    }
-                                })
+                                if (response.ok) {
+                                    return response.json();
+                                } else {
+                                    const errorMsg = `获取 OpenAI 模型列表失败 (${response.status})`;
+                                    showNotification(errorMsg, { type: 'error' });
+                                    throw new Error(errorMsg);
+                                }
+                            })
                                 .then(data => {
-                                    const models = (data.data || data)
-                                        .map(m => m.id)
-                                        .sort();
-                                    console.log("找到 OpenAI 可用模型:", models);
-                                    modelListCache[cacheKey] = { models: models, timestamp: Date.now() };
-                                    resolve(models);
-                                })
+                                const models = (data.data || data)
+                                .map(m => m.id)
+                                .sort();
+                                console.log("找到 OpenAI 可用模型:", models);
+                                modelListCache[cacheKey] = { models: models, timestamp: Date.now() };
+                                resolve(models);
+                            })
                                 .catch(error => {
-                                    if (error.name === 'AbortError') {
-                                        showNotification('获取 OpenAI 模型列表超时', { type: 'error' });
-                                        reject(new Error('获取 OpenAI 模型列表超时'));
-                                    } else {
-                                        showNotification('获取 OpenAI 模型列表失败: ' + error.message, { type: 'error' });
-                                        reject(error);
-                                    }
-                                });
+                                if (error.name === 'AbortError') {
+                                    showNotification('获取 OpenAI 模型列表超时', { type: 'error' });
+                                    reject(new Error('获取 OpenAI 模型列表超时'));
+                                } else {
+                                    showNotification('获取 OpenAI 模型列表失败: ' + error.message, { type: 'error' });
+                                    reject(error);
+                                }
+                            });
                         });
                     }
                     case 'gemini': {
@@ -12930,31 +13019,31 @@
                                 signal: AbortSignal.timeout(15000)
                             })
                                 .then(response => {
-                                    if (response.ok) {
-                                        return response.json();
-                                    } else {
-                                        const errorMsg = `获取 Gemini 模型列表失败 (${response.status})`;
-                                        showNotification(errorMsg, { type: 'error' });
-                                        throw new Error(errorMsg);
-                                    }
-                                })
+                                if (response.ok) {
+                                    return response.json();
+                                } else {
+                                    const errorMsg = `获取 Gemini 模型列表失败 (${response.status})`;
+                                    showNotification(errorMsg, { type: 'error' });
+                                    throw new Error(errorMsg);
+                                }
+                            })
                                 .then(data => {
-                                    const models = (data.models || [])
-                                        .map(m => m.name.replace('models/', ''))
-                                        .sort();
-                                    console.log("找到 Gemini 可用模型:", models);
-                                    modelListCache[cacheKey] = { models: models, timestamp: Date.now() };
-                                    resolve(models);
-                                })
+                                const models = (data.models || [])
+                                .map(m => m.name.replace('models/', ''))
+                                .sort();
+                                console.log("找到 Gemini 可用模型:", models);
+                                modelListCache[cacheKey] = { models: models, timestamp: Date.now() };
+                                resolve(models);
+                            })
                                 .catch(error => {
-                                    if (error.name === 'AbortError') {
-                                        showNotification('获取 Gemini 模型列表超时', { type: 'error' });
-                                        reject(new Error('获取 Gemini 模型列表超时'));
-                                    } else {
-                                        showNotification('获取 Gemini 模型列表失败: ' + error.message, { type: 'error' });
-                                        reject(error);
-                                    }
-                                });
+                                if (error.name === 'AbortError') {
+                                    showNotification('获取 Gemini 模型列表超时', { type: 'error' });
+                                    reject(new Error('获取 Gemini 模型列表超时'));
+                                } else {
+                                    showNotification('获取 Gemini 模型列表失败: ' + error.message, { type: 'error' });
+                                    reject(error);
+                                }
+                            });
                         });
                     }
                     case 'anthropic': {
@@ -12979,31 +13068,31 @@
                                 signal: AbortSignal.timeout(15000)
                             })
                                 .then(response => {
-                                    if (response.ok) {
-                                        return response.json();
-                                    } else {
-                                        const errorMsg = `获取 Anthropic 模型列表失败 (${response.status})`;
-                                        showNotification(errorMsg, { type: 'error' });
-                                        throw new Error(errorMsg);
-                                    }
-                                })
+                                if (response.ok) {
+                                    return response.json();
+                                } else {
+                                    const errorMsg = `获取 Anthropic 模型列表失败 (${response.status})`;
+                                    showNotification(errorMsg, { type: 'error' });
+                                    throw new Error(errorMsg);
+                                }
+                            })
                                 .then(data => {
-                                    const models = (data.data || [])
-                                        .map(m => m.id)
-                                        .sort();
-                                    console.log("找到 Anthropic 可用模型:", models);
-                                    modelListCache[cacheKey] = { models: models, timestamp: Date.now() };
-                                    resolve(models);
-                                })
+                                const models = (data.data || [])
+                                .map(m => m.id)
+                                .sort();
+                                console.log("找到 Anthropic 可用模型:", models);
+                                modelListCache[cacheKey] = { models: models, timestamp: Date.now() };
+                                resolve(models);
+                            })
                                 .catch(error => {
-                                    if (error.name === 'AbortError') {
-                                        showNotification('获取 Anthropic 模型列表超时', { type: 'error' });
-                                        reject(new Error('获取 Anthropic 模型列表超时'));
-                                    } else {
-                                        showNotification('获取 Anthropic 模型列表失败: ' + error.message, { type: 'error' });
-                                        reject(error);
-                                    }
-                                });
+                                if (error.name === 'AbortError') {
+                                    showNotification('获取 Anthropic 模型列表超时', { type: 'error' });
+                                    reject(new Error('获取 Anthropic 模型列表超时'));
+                                } else {
+                                    showNotification('获取 Anthropic 模型列表失败: ' + error.message, { type: 'error' });
+                                    reject(error);
+                                }
+                            });
                         });
                     }
                     case 'azure':
@@ -13020,14 +13109,14 @@
         async function fetchModelsAndPopulateDropdown(modelInputId, selectWrapper) {
             const isVision = modelInputId.startsWith('vision-');
             const provider = isVision
-                ? inputElements['vision-provider'].getValue()
-                : inputElements['ai-provider'].getValue();
+            ? inputElements['vision-provider'].getValue()
+            : inputElements['ai-provider'].getValue();
             const endpoint = isVision
-                ? inputElements['vision-endpoint'].value.trim()
-                : inputElements['ai-endpoint'].value.trim();
+            ? inputElements['vision-endpoint'].value.trim()
+            : inputElements['ai-endpoint'].value.trim();
             const apiKey = isVision
-                ? inputElements['vision-api-key'].value.trim()
-                : inputElements['ai-key'].value.trim();
+            ? inputElements['vision-api-key'].value.trim()
+            : inputElements['ai-key'].value.trim();
             const azureApiVersion = !isVision ? inputElements['ai-azure-apiversion']?.value.trim() : null;
             const fetchButton = selectWrapper.querySelector('.custom-select-fetch-btn');
             if (provider === 'default' || provider === 'main_model') {
@@ -13375,9 +13464,9 @@
             setTimeout(updateFieldVisibility, 50);
         }
     }
-    function showImportModal() {
-        const importOverlay = document.createElement('div');
-        importOverlay.style.cssText = `
+function showImportModal() {
+    const importOverlay = document.createElement('div');
+    importOverlay.style.cssText = `
             position: fixed; top: 0; left: 0; width: 100%; height: 100%;
             background-color: rgba(0, 0, 0, 0.5); z-index: 10002; display: flex;
             align-items: center; justify-content: center; backdrop-filter: blur(4px);
@@ -13457,7 +13546,7 @@
             }
         };
     }
-    const WavEncoderWorker = `
+const WavEncoderWorker = `
         self.onmessage = function(e) {
             const { channels, sampleRate, length } = e.data;
             const numOfChan = channels.length;
@@ -13499,56 +13588,56 @@
             self.postMessage(new Blob([view], { type: 'audio/wav' }));
         };
     `;
-    function parseAIResponseWithConfidence(responseText) {
-        const lines = responseText.trim().split('\n');
-        let confidence = null;
-        let answer = responseText.trim();
-        let lastNonEmptyLineIndex = -1;
-        for (let i = lines.length - 1; i >= 0; i--) {
-            if (lines[i].trim() !== '') {
-                lastNonEmptyLineIndex = i;
-                break;
-            }
+function parseAIResponseWithConfidence(responseText) {
+    const lines = responseText.trim().split('\n');
+    let confidence = null;
+    let answer = responseText.trim();
+    let lastNonEmptyLineIndex = -1;
+    for (let i = lines.length - 1; i >= 0; i--) {
+        if (lines[i].trim() !== '') {
+            lastNonEmptyLineIndex = i;
+            break;
         }
-        if (lastNonEmptyLineIndex !== -1) {
-            const potentialJsonLine = lines[lastNonEmptyLineIndex].trim();
-            try {
-                const parsedLine = JSON.parse(potentialJsonLine);
-                if (parsedLine && typeof parsedLine.confidence === 'number') {
-                    const score = parsedLine.confidence;
-                    if (score >= 1 && score <= 5) {
-                        confidence = Math.round(score);
-                        answer = lines.slice(0, lastNonEmptyLineIndex).join('\n').trim();
-                    }
-                }
-            } catch (e) {
-            }
-        }
-        return { answer, confidence };
     }
-    function createConfidenceStars(score) {
-        const container = document.createElement('div');
-        container.style.cssText = 'display: flex; align-items: center; gap: 8px; flex-wrap: wrap;';
-        if (score === null || score === undefined) {
-            container.innerHTML = '<span style="font-size: 12px; color: #9ca3af;">置信度: N/A</span>';
-            return container;
+    if (lastNonEmptyLineIndex !== -1) {
+        const potentialJsonLine = lines[lastNonEmptyLineIndex].trim();
+        try {
+            const parsedLine = JSON.parse(potentialJsonLine);
+            if (parsedLine && typeof parsedLine.confidence === 'number') {
+                const score = parsedLine.confidence;
+                if (score >= 1 && score <= 5) {
+                    confidence = Math.round(score);
+                    answer = lines.slice(0, lastNonEmptyLineIndex).join('\n').trim();
+                }
+            }
+        } catch (e) {
         }
-        const colors = {
-            1: '#ef4444',
-            2: '#f97316',
-            3: '#facc15',
-            4: '#84cc16',
-            5: '#22c55e'
-        };
-        const color = colors[score] || '#9ca3af';
-        const starsContainer = document.createElement('div');
-        starsContainer.style.cssText = 'display: flex; align-items: center; gap: 4px;';
-        const scoreText = document.createElement('span');
-        scoreText.textContent = `置信度:`;
-        scoreText.style.cssText = `font-size: 13px; font-weight: 600; color: #374151; margin-right: 4px;`;
-        starsContainer.appendChild(scoreText);
-        for (let i = 1; i <= 5; i++) {
-            const starSvg = `
+    }
+    return { answer, confidence };
+}
+function createConfidenceStars(score) {
+    const container = document.createElement('div');
+    container.style.cssText = 'display: flex; align-items: center; gap: 8px; flex-wrap: wrap;';
+    if (score === null || score === undefined) {
+        container.innerHTML = '<span style="font-size: 12px; color: #9ca3af;">置信度: N/A</span>';
+        return container;
+    }
+    const colors = {
+        1: '#ef4444',
+        2: '#f97316',
+        3: '#facc15',
+        4: '#84cc16',
+        5: '#22c55e'
+    };
+    const color = colors[score] || '#9ca3af';
+    const starsContainer = document.createElement('div');
+    starsContainer.style.cssText = 'display: flex; align-items: center; gap: 4px;';
+    const scoreText = document.createElement('span');
+    scoreText.textContent = `置信度:`;
+    scoreText.style.cssText = `font-size: 13px; font-weight: 600; color: #374151; margin-right: 4px;`;
+    starsContainer.appendChild(scoreText);
+    for (let i = 1; i <= 5; i++) {
+        const starSvg = `
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="${i <= score ? color : '#e5e7eb'}" stroke="${i <= score ? 'rgba(0,0,0,0.1)' : '#d1d5db'}" stroke-width="1">
                     <path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/>
                 </svg>
@@ -13578,55 +13667,55 @@
         container.appendChild(suggestionText);
         return container;
     }
-    const QuarkSearchManager = {
-        SERVICE_TICKET_KEY: 'quark_service_ticket',
-        TICKET_EXPIRY_KEY: 'quark_ticket_expiry',
-        TICKET_DURATION: 6 * 60 * 60 * 1000,
-        _captchaScriptLoadingPromise: null,
-        _gmRequest: function (details) {
-            return new Promise((resolve, reject) => {
-                if (!details.headers) {
-                    details.headers = {};
-                }
-                details.headers['Referer'] = 'https://vt.quark.cn/';
-                details.onload = (response) => {
-                    if (response.status >= 200 && response.status < 300) {
-                        try {
-                            resolve(JSON.parse(response.responseText));
-                        } catch (e) {
-                            reject(new Error("JSON parsing error: " + e.message));
-                        }
-                    } else {
-                        reject(new Error(`Request failed with status ${response.status}: ${response.statusText}`));
-                    }
-                };
-                details.onerror = (response) => {
-                    reject(new Error(`Network error: ${response.statusText || 'Unknown Error'}`));
-                };
-                details.ontimeout = () => {
-                    reject(new Error('Request timed out.'));
-                };
-                GM_xmlhttpRequest(details);
-            });
-        },
-        _getServiceTicket: function () {
-            const ticket = localStorage.getItem(this.SERVICE_TICKET_KEY);
-            const expiry = localStorage.getItem(this.TICKET_EXPIRY_KEY);
-            if (ticket && expiry && Date.now() < parseInt(expiry, 10)) {
-                return ticket;
+const QuarkSearchManager = {
+    SERVICE_TICKET_KEY: 'quark_service_ticket',
+    TICKET_EXPIRY_KEY: 'quark_ticket_expiry',
+    TICKET_DURATION: 6 * 60 * 60 * 1000,
+    _captchaScriptLoadingPromise: null,
+    _gmRequest: function (details) {
+        return new Promise((resolve, reject) => {
+            if (!details.headers) {
+                details.headers = {};
             }
-            RuntimePatcher.blessedRemoveItem(localStorage, this.SERVICE_TICKET_KEY);
-            RuntimePatcher.blessedRemoveItem(localStorage, this.TICKET_EXPIRY_KEY);
-            return null;
-        },
-        _setServiceTicket: function (ticket) {
-            localStorage.setItem(this.SERVICE_TICKET_KEY, ticket);
-            localStorage.setItem(this.TICKET_EXPIRY_KEY, Date.now() + this.TICKET_DURATION);
-        },
-        _initiateLoginFlow: function () {
-            return new Promise(async (resolve, reject) => {
-                const modalOverlay = document.createElement('div');
-                modalOverlay.style.cssText = `
+            details.headers['Referer'] = 'https://vt.quark.cn/';
+            details.onload = (response) => {
+                if (response.status >= 200 && response.status < 300) {
+                    try {
+                        resolve(JSON.parse(response.responseText));
+                    } catch (e) {
+                        reject(new Error("JSON parsing error: " + e.message));
+                    }
+                } else {
+                    reject(new Error(`Request failed with status ${response.status}: ${response.statusText}`));
+                }
+            };
+            details.onerror = (response) => {
+                reject(new Error(`Network error: ${response.statusText || 'Unknown Error'}`));
+            };
+            details.ontimeout = () => {
+                reject(new Error('Request timed out.'));
+            };
+            GM_xmlhttpRequest(details);
+        });
+    },
+    _getServiceTicket: function () {
+        const ticket = localStorage.getItem(this.SERVICE_TICKET_KEY);
+        const expiry = localStorage.getItem(this.TICKET_EXPIRY_KEY);
+        if (ticket && expiry && Date.now() < parseInt(expiry, 10)) {
+            return ticket;
+        }
+        RuntimePatcher.blessedRemoveItem(localStorage, this.SERVICE_TICKET_KEY);
+        RuntimePatcher.blessedRemoveItem(localStorage, this.TICKET_EXPIRY_KEY);
+        return null;
+    },
+    _setServiceTicket: function (ticket) {
+        localStorage.setItem(this.SERVICE_TICKET_KEY, ticket);
+        localStorage.setItem(this.TICKET_EXPIRY_KEY, Date.now() + this.TICKET_DURATION);
+    },
+    _initiateLoginFlow: function () {
+        return new Promise(async (resolve, reject) => {
+            const modalOverlay = document.createElement('div');
+            modalOverlay.style.cssText = `
                     position: fixed; top: 0; left: 0; width: 100%; height: 100%;
                     background: linear-gradient(135deg, rgba(0, 123, 255, 0.2), rgba(99, 102, 241, 0.2));
                     backdrop-filter: blur(12px);
@@ -14320,81 +14409,81 @@
             }
         }
     };
-    const updateChecker = {
-        API_URL: 'https://api.zygame1314.site/check/scripts',
-        SCRIPT_NAME: '小雅答答答',
-        CURRENT_VERSION: GM_info.script.version,
-        async check() {
-            console.log(`[更新检查] 当前版本: ${this.CURRENT_VERSION}，正在请求版本列表...`);
-            try {
-                const response = await fetch(this.API_URL);
-                if (!response.ok) {
-                    console.error('[更新检查] 请求版本API失败:', response.statusText);
-                    return;
-                }
-                const scriptsData = await response.json();
-                if (!Array.isArray(scriptsData)) {
-                    console.error('[更新检查] API返回数据格式不正确，期望一个数组，但收到了:', scriptsData);
-                    return;
-                }
-                const targetScript = scriptsData.find(s => s.name === this.SCRIPT_NAME);
-                if (!targetScript) {
-                    console.warn(`[更新检查] 在API列表中未找到脚本: ${this.SCRIPT_NAME}`);
-                    return;
-                }
-                console.log(`[更新检查] 最新版本: ${targetScript.version}`);
-                if (this.isNewerVersion(targetScript.version, this.CURRENT_VERSION)) {
-                    console.log('[更新检查] 发现新版本！准备推送更新通知。');
-                    this.showUpdateNotification(targetScript);
-                } else {
-                    console.log('[更新检查] 当前已是最新版本。');
-                }
-            } catch (error) {
-                console.error('[更新检查] 发生错误:', error);
+const updateChecker = {
+    API_URL: 'https://api.zygame1314.site/check/scripts',
+    SCRIPT_NAME: '小雅答答答',
+    CURRENT_VERSION: GM_info.script.version,
+    async check() {
+        console.log(`[更新检查] 当前版本: ${this.CURRENT_VERSION}，正在请求版本列表...`);
+        try {
+            const response = await fetch(this.API_URL);
+            if (!response.ok) {
+                console.error('[更新检查] 请求版本API失败:', response.statusText);
+                return;
             }
-        },
-        isNewerVersion(newVersion, oldVersion) {
-            const newParts = newVersion.split('.').map(Number);
-            const oldParts = oldVersion.split('.').map(Number);
-            for (let i = 0; i < Math.max(newParts.length, oldParts.length); i++) {
-                const newPart = newParts[i] || 0;
-                const oldPart = oldParts[i] || 0;
-                if (newPart > oldPart) return true;
-                if (newPart < oldPart) return false;
+            const scriptsData = await response.json();
+            if (!Array.isArray(scriptsData)) {
+                console.error('[更新检查] API返回数据格式不正确，期望一个数组，但收到了:', scriptsData);
+                return;
             }
-            return false;
-        },
-        showUpdateNotification(scriptInfo) {
-            showNotification(
-                `发现新版本 v${scriptInfo.version}！点击立即更新。`,
-                {
-                    type: 'success',
-                    duration: 0,
-                    keywords: ['新版本', `v${scriptInfo.version}`, '更新'],
-                    animation: 'scale'
-                }
-            );
-            setTimeout(() => {
-                const container = document.getElementById('notification-container');
-                if (container && container.lastChild) {
-                    const notificationElement = container.lastChild;
-                    notificationElement.style.cursor = 'pointer';
-                    notificationElement.onclick = () => {
-                        window.open(scriptInfo.downloadUrl, '_blank');
-                        notificationElement.innerHTML = '正在跳转至更新页面...';
-                        setTimeout(() => {
-                            if (container.contains(notificationElement)) {
-                                container.removeChild(notificationElement);
-                            }
-                        }, 2000);
-                    };
-                }
-            }, 100);
-        },
-        init() {
-            setTimeout(() => this.check(), 10000);
-            setInterval(() => this.check(), 4 * 60 * 60 * 1000);
+            const targetScript = scriptsData.find(s => s.name === this.SCRIPT_NAME);
+            if (!targetScript) {
+                console.warn(`[更新检查] 在API列表中未找到脚本: ${this.SCRIPT_NAME}`);
+                return;
+            }
+            console.log(`[更新检查] 最新版本: ${targetScript.version}`);
+            if (this.isNewerVersion(targetScript.version, this.CURRENT_VERSION)) {
+                console.log('[更新检查] 发现新版本！准备推送更新通知。');
+                this.showUpdateNotification(targetScript);
+            } else {
+                console.log('[更新检查] 当前已是最新版本。');
+            }
+        } catch (error) {
+            console.error('[更新检查] 发生错误:', error);
         }
-    };
-    updateChecker.init();
+    },
+    isNewerVersion(newVersion, oldVersion) {
+        const newParts = newVersion.split('.').map(Number);
+        const oldParts = oldVersion.split('.').map(Number);
+        for (let i = 0; i < Math.max(newParts.length, oldParts.length); i++) {
+            const newPart = newParts[i] || 0;
+            const oldPart = oldParts[i] || 0;
+            if (newPart > oldPart) return true;
+            if (newPart < oldPart) return false;
+        }
+        return false;
+    },
+    showUpdateNotification(scriptInfo) {
+        showNotification(
+            `发现新版本 v${scriptInfo.version}！点击立即更新。`,
+            {
+                type: 'success',
+                duration: 0,
+                keywords: ['新版本', `v${scriptInfo.version}`, '更新'],
+                animation: 'scale'
+            }
+        );
+        setTimeout(() => {
+            const container = document.getElementById('notification-container');
+            if (container && container.lastChild) {
+                const notificationElement = container.lastChild;
+                notificationElement.style.cursor = 'pointer';
+                notificationElement.onclick = () => {
+                    window.open(scriptInfo.downloadUrl, '_blank');
+                    notificationElement.innerHTML = '正在跳转至更新页面...';
+                    setTimeout(() => {
+                        if (container.contains(notificationElement)) {
+                            container.removeChild(notificationElement);
+                        }
+                    }, 2000);
+                };
+            }
+        }, 100);
+    },
+    init() {
+        setTimeout(() => this.check(), 10000);
+        setInterval(() => this.check(), 4 * 60 * 60 * 1000);
+    }
+};
+updateChecker.init();
 })();
