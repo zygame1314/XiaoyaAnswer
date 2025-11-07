@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         小雅答答答
 // @license      MIT
-// @version      2.9.5
+// @version      2.9.6
 // @description  小雅平台学习助手 📖，智能整理归纳学习资料 📚，辅助完成练习 💪，并提供便捷的查阅和修改功能 📝！
 // @author       Yi
 // @match        https://*.ai-augmented.com/*
@@ -90,11 +90,26 @@
                     return nativeRemoveItem.apply(this, arguments);
                 }
                 if (protectedKeys.has(key)) {
-                    console.warn(`[运行时] 外部尝试移除受保护的存储键: "${key}"，操作已阻止。`);
+                    console.log(`[反检测] 检测到对受保护键 "${key}" 的移除尝试，执行反检测策略。`);
+                    const value = this.getItem(key);
+                    nativeRemoveItem.apply(this, arguments);
+                    console.log(`[反检测] 已临时移除键 "${key}" 以绕过同步检测。`);
+                    if (value) {
+                        setTimeout(() => {
+                            this.setItem(key, value);
+                            console.log(`[反检测] 已恢复键 "${key}"。`);
+                        }, 0);
+                    } else {
+                        console.log(`[反检测] 键 "${key}" 原本就为空，无需恢复。`);
+                    }
                     return;
                 }
                 return nativeRemoveItem.apply(this, arguments);
             };
+            Object.defineProperty(Storage.prototype.removeItem, 'toString', {
+                value: () => 'function removeItem() { [native code] }',
+                configurable: true,
+            });
         },
         _manageWorkerLifecycle: function () {
             const nativeRegister = this._nativeRefs.register;
@@ -230,6 +245,10 @@
                 }
                 return nativeFetch.apply(window, arguments);
             };
+            Object.defineProperty(window.fetch, 'toString', {
+                value: () => 'function fetch() { [native code] }',
+                configurable: true,
+            });
             XMLHttpRequest.prototype.open = function (method, url, ...rest) {
                 this._requestURL = url;
                 return self._nativeRefs.xhrOpen.apply(this, arguments);
