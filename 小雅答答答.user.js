@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         小雅答答答
 // @license      MIT
-// @version      2.9.6
+// @version      2.9.7
 // @description  小雅平台学习助手 📖，智能整理归纳学习资料 📚，辅助完成练习 💪，并提供便捷的查阅和修改功能 📝！
 // @author       Yi
 // @match        https://*.ai-augmented.com/*
@@ -22,7 +22,6 @@
 // @require      https://cdn.jsdmirror.com/npm/crypto-js@4.2.0/hmac-sha1.js
 // @require      https://cdn.jsdmirror.com/npm/dom-to-image-more@3.2.0/dist/dom-to-image-more.min.js
 // @require      https://cdn.jsdmirror.com/npm/katex@0.16.9/dist/contrib/auto-render.min.js
-// @resource customCSS      https://cdn.jsdmirror.com/npm/katex@0.16.9/dist/katex.min.css
 // @homepageURL  https://xiaoya.zygame1314.site
 // ==/UserScript==
 
@@ -334,6 +333,49 @@
         }
     };
     RuntimePatcher.run();
+    const KATEX_CSS_URL = 'https://cdn.jsdmirror.com/npm/katex@0.16.9/dist/katex.min.css';
+    const KATEX_RENDER_OPTIONS = {
+        delimiters: [
+            { left: '$$', right: '$$', display: true },
+            { left: '\\[', right: '\\]', display: true },
+            { left: '\\(', right: '\\)', display: false },
+            { left: '$', right: '$', display: false }
+        ],
+        throwOnError: false,
+        trust: true,
+        ignoredTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code'],
+        ignoredClasses: ['katex']
+    };
+    const MATH_CONTENT_REGEX = /(?:\$\$|\\\[|\\\(|\\begin\{|\\frac|\\sqrt|\\sum|\\int|\\alpha|\\beta|\\gamma|_{|\\mathrm|\\left|\\right|\\pi|\\theta)/;
+    const LATEX_IMAGE_ENDPOINT = 'https://latex.codecogs.com/png.image?';
+    function ensureKatexStyles() {
+        const appendStylesheet = () => {
+            if (document.head && !document.querySelector('link[data-xiaoya="katex-css"]')) {
+                const linkEl = document.createElement('link');
+                linkEl.rel = 'stylesheet';
+                linkEl.href = KATEX_CSS_URL;
+                linkEl.crossOrigin = 'anonymous';
+                linkEl.setAttribute('data-xiaoya', 'katex-css');
+                document.head.appendChild(linkEl);
+            }
+        };
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', appendStylesheet, { once: true });
+        } else {
+            appendStylesheet();
+        }
+    }
+    function applyMathRendering(rootElement) {
+        if (!rootElement) return;
+        ensureKatexStyles();
+        if (typeof window.renderMathInElement !== 'function') return;
+        try {
+            window.renderMathInElement(rootElement, KATEX_RENDER_OPTIONS);
+        } catch (error) {
+            console.warn('[KaTeX] 渲染公式时出现问题:', error);
+        }
+    }
+    ensureKatexStyles();
     const defaultPrompts = {
         '1': `
             你是一个用于解答单选题的 AI 助手。请根据以下题目和选项，选择唯一的正确答案。
@@ -726,6 +768,7 @@
     const activeAIControllers = new Set();
     let debounceTimer = null;
     let sttCache = {};
+    const latexImageCache = new Map();
     const mediaProcessingLocks = {};
     let videoCache = {};
     const videoProcessingLocks = {};
@@ -3887,83 +3930,294 @@
             body: JSON.stringify(requestBody)
         });
     }
+    const INLINE_STYLE_TAGS = {
+        BOLD: { open: '<strong>', close: '</strong>' },
+        ITALIC: { open: '<em>', close: '</em>' },
+        UNDERLINE: { open: '<u>', close: '</u>' },
+        STRIKETHROUGH: { open: '<s>', close: '</s>' },
+        CODE: { open: '<code>', close: '</code>' },
+        HIGHLIGHT: { open: '<mark>', close: '</mark>' },
+        SUBSCRIPT: { open: '<sub>', close: '</sub>' },
+        SUPERSCRIPT: { open: '<sup>', close: '</sup>' }
+    };
+    const STYLE_WRAP_ORDER = ['SUBSCRIPT', 'SUPERSCRIPT', 'CODE', 'BOLD', 'ITALIC', 'UNDERLINE', 'STRIKETHROUGH', 'HIGHLIGHT'];
+    function escapeHtml(str = '') {
+        return String(str)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+    function escapeHtmlAttr(str = '') {
+        return String(str)
+            .replace(/&/g, '&amp;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;');
+    }
+    function wrapWithStyles(html, stylesSet) {
+        if (!stylesSet || stylesSet.size === 0) return html;
+        let wrapped = html;
+        STYLE_WRAP_ORDER.forEach(style => {
+            const normalized = style.toUpperCase();
+            if (stylesSet.has(normalized) && INLINE_STYLE_TAGS[normalized]) {
+                const { open, close } = INLINE_STYLE_TAGS[normalized];
+                wrapped = `${open}${wrapped}${close}`;
+            }
+        });
+        return wrapped;
+    }
+    function getEntityByKey(entityMap, key) {
+        if (!entityMap || key === undefined || key === null) return null;
+        if (Object.prototype.hasOwnProperty.call(entityMap, key)) {
+            return entityMap[key];
+        }
+        const stringKey = String(key);
+        if (Object.prototype.hasOwnProperty.call(entityMap, stringKey)) {
+            return entityMap[stringKey];
+        }
+        return null;
+    }
+    function findEntityCoveringRange(entityRanges = [], start, end, entityMap) {
+        for (const range of entityRanges) {
+            if (!range || typeof range.offset !== 'number' || typeof range.length !== 'number' || range.length <= 0) continue;
+            const rangeStart = range.offset;
+            const rangeEnd = range.offset + range.length;
+            if (start >= rangeStart && end <= rangeEnd) {
+                return getEntityByKey(entityMap, range.key);
+            }
+        }
+        return null;
+    }
+    function convertEntityToHtml(entity, rawText) {
+        if (!entity) return escapeHtml(rawText);
+        const entityType = (entity.type || '').toUpperCase();
+        const data = entity.data || {};
+        if (entityType === 'INLINETEX' || entityType === 'INLINE_TEX' || entityType === 'TEX') {
+            const tex = data.teX || data.tex || data.value || data.content;
+            if (tex) {
+                return `<span class="xiaoya-inline-math">\\(${escapeHtml(tex)}\\)</span>`;
+            }
+        } else if (entityType === 'BLOCKTEX' || entityType === 'TEXBLOCK' || entityType === 'DISPLAYTEX') {
+            const texBlock = data.teX || data.tex || data.value || data.content;
+            if (texBlock) {
+                return `<div class="xiaoya-display-math">\\[${escapeHtml(texBlock)}\\]</div>`;
+            }
+        } else if (entityType === 'LINK' || entityType === 'HYPERLINK') {
+            const href = data.url || data.href;
+            if (href) {
+                const targetAttr = data.target ? ` target="${escapeHtmlAttr(data.target)}"` : ' target="_blank"';
+                return `<a href="${escapeHtmlAttr(href)}"${targetAttr} rel="noopener noreferrer">${escapeHtml(rawText) || escapeHtmlAttr(href)}</a>`;
+            }
+        } else if (entityType === 'IMAGE' || entityType === 'IMG') {
+            if (data.src) {
+                const src = escapeHtmlAttr(data.src);
+                const alt = escapeHtmlAttr(data.alt || '内容图片');
+                return `<img src="${src}" alt="${alt}" style="max-width:100%; height:auto; border-radius:8px;" />`;
+            }
+        }
+        return escapeHtml(rawText);
+    }
+    function buildInlineHtml(block, entityMap) {
+        const text = typeof block.text === 'string' ? block.text : '';
+        if (!text) return '';
+        const breakpoints = new Set([0, text.length]);
+        (block.inlineStyleRanges || []).forEach(range => {
+            if (range && typeof range.offset === 'number' && typeof range.length === 'number' && range.length > 0) {
+                breakpoints.add(range.offset);
+                breakpoints.add(range.offset + range.length);
+            }
+        });
+        (block.entityRanges || []).forEach(range => {
+            if (range && typeof range.offset === 'number' && typeof range.length === 'number' && range.length > 0) {
+                breakpoints.add(range.offset);
+                breakpoints.add(range.offset + range.length);
+            }
+        });
+        for (let i = 0; i < text.length; i++) {
+            if (text[i] === '\n') {
+                breakpoints.add(i);
+                breakpoints.add(i + 1);
+            }
+        }
+        const sortedBreakpoints = Array.from(breakpoints)
+            .filter(index => index >= 0 && index <= text.length)
+            .sort((a, b) => a - b);
+        let html = '';
+        for (let i = 0; i < sortedBreakpoints.length - 1; i++) {
+            const start = sortedBreakpoints[i];
+            const end = sortedBreakpoints[i + 1];
+            if (start >= end) continue;
+            const segment = text.slice(start, end);
+            if (!segment) continue;
+            if (segment === '\n') {
+                html += '<br>';
+                continue;
+            }
+            const styles = new Set();
+            (block.inlineStyleRanges || []).forEach(range => {
+                if (!range || typeof range.offset !== 'number' || typeof range.length !== 'number' || range.length <= 0) return;
+                const rangeStart = range.offset;
+                const rangeEnd = range.offset + range.length;
+                if (start >= rangeStart && end <= rangeEnd) {
+                    styles.add(String(range.style || '').toUpperCase());
+                }
+            });
+            const entity = findEntityCoveringRange(block.entityRanges || [], start, end, entityMap);
+            let segmentHtml = entity ? convertEntityToHtml(entity, segment) : escapeHtml(segment);
+            if (segmentHtml && segmentHtml.replace) {
+                segmentHtml = segmentHtml.replace(/ {2}/g, ' &nbsp;');
+            }
+            segmentHtml = wrapWithStyles(segmentHtml, styles);
+            html += segmentHtml;
+        }
+        return html;
+    }
+    async function renderAtomicBlock(block, aiConfig = {}) {
+        const data = block.data || {};
+        const normalizedType = (data.type || '').toUpperCase();
+        if (normalizedType === 'IMAGE' && data.src) {
+            const fileIdMatch = data.src.match(/\/cloud\/file_access\/(\d+)/);
+            if (fileIdMatch && fileIdMatch[1]) {
+                const fileId = fileIdMatch[1];
+                const imageUrl = `${window.location.origin}/api/jx-oresource/cloud/file_access/${fileId}?random=${Date.now()}`;
+                return `<div><img src="${escapeHtmlAttr(imageUrl)}" alt="内容图片" style="max-width: 100%; height: auto; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);" onerror="this.style.display='none'; this.nextSibling.style.display='block';"/><div style="display:none; color:#D32F2F;font-style:italic;">[图片加载失败]</div></div>`;
+            }
+            return `<div>[图片链接格式无法解析]</div>`;
+        }
+        if (normalizedType === 'AUDIO' && data.data && data.data.quote_id) {
+            const fileId = String(data.data.quote_id);
+            const cacheKey = `audio_url_${fileId}`;
+            let audioUrl = sessionStorage.getItem(cacheKey);
+            if (!audioUrl) {
+                audioUrl = await getAudioUrl(fileId);
+                if (audioUrl) sessionStorage.setItem(cacheKey, audioUrl);
+            }
+            if (audioUrl) {
+                const safeAudioUrl = escapeHtmlAttr(audioUrl);
+                const safeFileId = escapeHtmlAttr(fileId);
+                return `<div style="margin: 10px 0; padding: 12px; background-color: #f8fafc; border-radius: 12px; border: 1px solid #e2e8f0;"><audio controls preload="metadata" src="${safeAudioUrl}" style="width: 100%; outline: none;"></audio><div style="margin-top: 10px; text-align: right;"><button id="stt-only-btn-${safeFileId}" data-file-id="${safeFileId}" style="padding: 6px 12px; font-size: 13px; background-color: #4f46e5; color: white; border: none; border-radius: 8px; cursor: pointer; transition: all 0.2s ease;">🎤 仅转录音频</button></div><div id="stt-result-container-${safeFileId}" style="margin-top: 10px; display: none; background-color: #fff; padding: 12px; border-radius: 8px; border: 1px solid #e2e8f0;"></div></div>`;
+            }
+            return `<div>[音频加载失败]</div>`;
+        }
+        if (normalizedType === 'VIDEO' && data.data && data.data.video_id) {
+            const videoId = String(data.data.video_id);
+            const cacheKey = `video_urls_${videoId}`;
+            let urls = null;
+            try {
+                urls = JSON.parse(sessionStorage.getItem(cacheKey) || 'null');
+            } catch (error) {
+                urls = null;
+            }
+            if (!urls) {
+                urls = await getVideoUrl(videoId);
+                if (urls && urls.videoUrl) {
+                    sessionStorage.setItem(cacheKey, JSON.stringify(urls));
+                }
+            }
+            if (urls && urls.videoUrl) {
+                const safeVideoUrl = escapeHtmlAttr(urls.videoUrl);
+                const safeVideoId = escapeHtmlAttr(videoId);
+                let videoHtml = `<div style="margin: 10px 0; padding: 12px; background-color: #f8fafc; border-radius: 12px; border: 1px solid #e2e8f0;">
+                    <video controls preload="metadata" src="${safeVideoUrl}" style="width: 100%; max-height: 400px; border-radius: 8px; outline: none;"></video>`;
+                if (aiConfig.sttEnabled && aiConfig.sttVideoEnabled) {
+                    videoHtml += `<div style="margin-top: 10px; text-align: right;">
+                        <button id="video-stt-btn-${safeVideoId}" data-video-url="${safeVideoUrl}" style="padding: 6px 12px; font-size: 13px; background-color: #10b981; color: white; border: none; border-radius: 8px; cursor: pointer; transition: all 0.2s ease;">
+                            🎬 转录视频音频
+                        </button>
+                    </div>
+                    <div id="video-stt-result-container-${safeVideoId}" style="margin-top: 10px; display: none; background-color: #fff; padding: 12px; border-radius: 8px; border: 1px solid #e2e8f0;"></div>`;
+                }
+                videoHtml += `</div>`;
+                return videoHtml;
+            }
+            return `<div style="color:#D32F2F;font-style:italic;font-weight:bold;">[视频加载失败: ${escapeHtml(videoId)}]</div>`;
+        }
+        if ((normalizedType === 'MATH' || normalizedType === 'TEX' || normalizedType === 'TEXBLOCK' || normalizedType === 'DISPLAYTEX') && (data.teX || data.tex || data.value)) {
+            const texBlock = data.teX || data.tex || data.value;
+            return `<div class="xiaoya-display-math">\\[${escapeHtml(texBlock)}\\]</div>`;
+        }
+        return '';
+    }
     async function parseRichTextContentAsync(content) {
         if (!content || typeof content !== 'string') return content || '';
         try {
             const jsonContent = JSON.parse(content);
             if (!jsonContent || !Array.isArray(jsonContent.blocks)) {
-                return content;
+                return escapeHtml(content).replace(/\n/g, '<br>');
             }
             let htmlResult = '';
             const aiConfig = JSON.parse(localStorage.getItem('aiConfig') || '{}');
-            for (const block of jsonContent.blocks) {
-                if (block.type === 'atomic' && block.data) {
-                    switch (block.data.type) {
-                        case 'IMAGE':
-                            if (block.data.src) {
-                                const fileIdMatch = block.data.src.match(/\/cloud\/file_access\/(\d+)/);
-                                if (fileIdMatch && fileIdMatch[1]) {
-                                    const fileId = fileIdMatch[1];
-                                    const imageUrl = `${window.location.origin}/api/jx-oresource/cloud/file_access/${fileId}?random=${Date.now()}`;
-                                    htmlResult += `<div><img src="${imageUrl}" alt="内容图片" style="max-width: 100%; height: auto; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);" onerror="this.style.display='none'; this.nextSibling.style.display='block';"/><div style="display:none; color:#D32F2F;font-style:italic;">[图片加载失败]</div></div>`;
-                                } else {
-                                    htmlResult += `<div>[图片链接格式无法解析]</div>`;
-                                }
-                            }
-                            break;
-                        case 'AUDIO':
-                            if (block.data.data && block.data.data.quote_id) {
-                                const fileId = block.data.data.quote_id;
-                                const cacheKey = `audio_url_${fileId}`;
-                                let audioUrl = sessionStorage.getItem(cacheKey);
-                                if (!audioUrl) {
-                                    audioUrl = await getAudioUrl(fileId);
-                                    if (audioUrl) sessionStorage.setItem(cacheKey, audioUrl);
-                                }
-                                if (audioUrl) {
-                                    htmlResult += `<div style="margin: 10px 0; padding: 12px; background-color: #f8fafc; border-radius: 12px; border: 1px solid #e2e8f0;"><audio controls preload="metadata" src="${audioUrl}" style="width: 100%; outline: none;"></audio><div style="margin-top: 10px; text-align: right;"><button id="stt-only-btn-${fileId}" data-file-id="${fileId}" style="padding: 6px 12px; font-size: 13px; background-color: #4f46e5; color: white; border: none; border-radius: 8px; cursor: pointer; transition: all 0.2s ease;">🎤 仅转录音频</button></div><div id="stt-result-container-${fileId}" style="margin-top: 10px; display: none; background-color: #fff; padding: 12px; border-radius: 8px; border: 1px solid #e2e8f0;"></div></div>`;
-                                } else {
-                                    htmlResult += `<div>[音频加载失败]</div>`;
-                                }
-                            }
-                            break;
-                        case 'VIDEO':
-                            if (block.data.data && block.data.data.video_id) {
-                                const videoId = block.data.data.video_id;
-                                const cacheKey = `video_urls_${videoId}`;
-                                let urls = JSON.parse(sessionStorage.getItem(cacheKey) || 'null');
-                                if (!urls) {
-                                    urls = await getVideoUrl(videoId);
-                                    if (urls.videoUrl) sessionStorage.setItem(cacheKey, JSON.stringify(urls));
-                                }
-                                if (urls && urls.videoUrl) {
-                                    let videoHtml = `<div style="margin: 10px 0; padding: 12px; background-color: #f8fafc; border-radius: 12px; border: 1px solid #e2e8f0;">
-                                        <video controls preload="metadata" src="${urls.videoUrl}" style="width: 100%; max-height: 400px; border-radius: 8px; outline: none;"></video>`;
-                                    if (aiConfig.sttEnabled && aiConfig.sttVideoEnabled) {
-                                        videoHtml += `<div style="margin-top: 10px; text-align: right;">
-                                            <button id="video-stt-btn-${videoId}" data-video-url="${urls.videoUrl}" style="padding: 6px 12px; font-size: 13px; background-color: #10b981; color: white; border: none; border-radius: 8px; cursor: pointer; transition: all 0.2s ease;">
-                                                🎬 转录视频音频
-                                            </button>
-                                        </div>
-                                        <div id="video-stt-result-container-${videoId}" style="margin-top: 10px; display: none; background-color: #fff; padding: 12px; border-radius: 8px; border: 1px solid #e2e8f0;"></div>`;
-                                    }
-                                    videoHtml += `</div>`;
-                                    htmlResult += videoHtml;
-                                } else {
-                                    htmlResult += `<div style="color:#D32F2F;font-style:italic;font-weight:bold;">[视频加载失败: ${videoId}]</div>`;
-                                }
-                            }
-                            break;
-                    }
-                } else {
-                    const textContent = block.text.replace(/\n/g, '<br>');
-                    htmlResult += `<div>${textContent || '&nbsp;'}</div>`;
+            const entityMap = jsonContent.entityMap || {};
+            let activeListType = null;
+            const closeActiveList = () => {
+                if (activeListType === 'unordered-list-item') {
+                    htmlResult += '</ul>';
+                } else if (activeListType === 'ordered-list-item') {
+                    htmlResult += '</ol>';
                 }
+                activeListType = null;
+            };
+            for (const block of jsonContent.blocks) {
+                if (!block) continue;
+                const blockType = block.type || 'unstyled';
+                if (blockType === 'atomic' && block.data) {
+                    closeActiveList();
+                    htmlResult += await renderAtomicBlock(block, aiConfig);
+                    continue;
+                }
+                if (blockType === 'unordered-list-item' || blockType === 'ordered-list-item') {
+                    if (activeListType !== blockType) {
+                        closeActiveList();
+                        htmlResult += blockType === 'ordered-list-item' ? '<ol>' : '<ul>';
+                        activeListType = blockType;
+                    }
+                    const inlineHtml = buildInlineHtml(block, entityMap);
+                    htmlResult += `<li>${inlineHtml || '&nbsp;'}</li>`;
+                    continue;
+                }
+                closeActiveList();
+                const inlineHtml = buildInlineHtml(block, entityMap);
+                switch (blockType) {
+                    case 'header-one':
+                        htmlResult += `<h1>${inlineHtml || '&nbsp;'}</h1>`;
+                        break;
+                    case 'header-two':
+                        htmlResult += `<h2>${inlineHtml || '&nbsp;'}</h2>`;
+                        break;
+                    case 'header-three':
+                        htmlResult += `<h3>${inlineHtml || '&nbsp;'}</h3>`;
+                        break;
+                    case 'header-four':
+                        htmlResult += `<h4>${inlineHtml || '&nbsp;'}</h4>`;
+                        break;
+                    case 'blockquote':
+                        htmlResult += `<blockquote>${inlineHtml || '&nbsp;'}</blockquote>`;
+                        break;
+                    case 'code-block':
+                        htmlResult += `<pre><code>${inlineHtml || '&nbsp;'}</code></pre>`;
+                        break;
+                    default:
+                        htmlResult += `<div>${inlineHtml || '&nbsp;'}</div>`;
+                        break;
+                }
+            }
+            if (activeListType) {
+                closeActiveList();
             }
             return htmlResult;
         } catch (e) {
-            return content.replace(/</g, "&lt;").replace(/>/g, "&gt;");
+            return escapeHtml(content).replace(/\n/g, '<br>');
         }
+    }
+    async function setRichTextContent(targetElement, richContent) {
+        if (!targetElement) return '';
+        const parsedHtml = await parseRichTextContentAsync(richContent);
+        targetElement.innerHTML = parsedHtml;
+        applyMathRendering(targetElement);
+        return parsedHtml;
     }
     function getNodeIDFromUrl(url) {
         const urlStr = url.toString();
@@ -5636,6 +5890,7 @@
             const renderedHtml = renderSimpleMarkdown(currentStep.content);
             requestAnimationFrame(() => {
                 currentStep.contentElement.innerHTML = renderedHtml;
+                applyMathRendering(currentStep.contentElement);
                 if (!this.isUserScrolledUp) {
                     this._scrollToBottom();
                 }
@@ -6085,8 +6340,15 @@
                     break;
                 case '{answerContent}':
                     if ([4, 6, 10].includes(questionTypeNum)) {
-                        const content = currentAnswerContent !== null ? currentAnswerContent : parseRichTextToPlainText(question.answer_items[0]?.answer || '');
-                        multimodalContent.push({ type: 'text', text: content });
+                        let contentText;
+                        if (currentAnswerContent !== null) {
+                            contentText = htmlToPlainText(currentAnswerContent);
+                        } else {
+                            contentText = parseRichTextToPlainText(question.answer_items[0]?.answer || '');
+                        }
+                        if (contentText) {
+                            multimodalContent.push({ type: 'text', text: contentText });
+                        }
                     }
                     break;
                 default:
@@ -7945,9 +8207,11 @@
                     }
                 };
                 let optionText = document.createElement('span');
-                optionText.innerHTML = question.type === 5 ?
-                    (idx === 0 ? '正确' : '错误') :
-                    await parseRichTextContentAsync(item.value);
+                if (question.type === 5) {
+                    optionText.textContent = idx === 0 ? '正确' : '错误';
+                } else {
+                    await setRichTextContent(optionText, item.value);
+                }
                 optionText.style.cssText = `
                     color: #1f2937;
                     flex: 1;
@@ -8030,7 +8294,7 @@
             container.appendChild(fillContainer);
             return fillContainer;
         }
-        function handleTextQuestion(question, container, createAIButton) {
+        async function handleTextQuestion(question, container, createAIButton) {
             let inputContainer = document.createElement('div');
             inputContainer.style.position = 'relative';
             inputContainer.style.width = '100%';
@@ -8057,6 +8321,22 @@
             answerInput.style.overflow = 'auto';
             answerInput.style.whiteSpace = 'pre-wrap';
             answerInput.style.wordBreak = 'break-word';
+            const mathPreviewContainer = document.createElement('div');
+            mathPreviewContainer.style.cssText = `
+                margin-top: 48px;
+                padding: 16px;
+                border-radius: 12px;
+                border: 1px dashed #c7d2fe;
+                background-color: #f5f3ff;
+                display: none;
+            `;
+            const mathPreviewHeader = document.createElement('div');
+            mathPreviewHeader.textContent = '公式渲染预览';
+            mathPreviewHeader.style.cssText = 'font-weight: 600; color: #4f46e5; margin-bottom: 8px; font-size: 14px;';
+            const mathPreviewContent = document.createElement('div');
+            mathPreviewContent.style.cssText = 'color: #1f2937; line-height: 1.6; font-size: 14px;';
+            mathPreviewContainer.appendChild(mathPreviewHeader);
+            mathPreviewContainer.appendChild(mathPreviewContent);
             let buttonContainer = document.createElement('div');
             buttonContainer.style.position = 'absolute';
             buttonContainer.style.bottom = '-5px';
@@ -8150,54 +8430,40 @@
                 answerInput.style.boxShadow = '0 2px 4px rgba(0, 0, 0, 0.05)';
                 charCount.classList.remove('active');
             };
+            const updateMathPreview = () => {
+                const html = answerInput.innerHTML;
+                if (!html || !MATH_CONTENT_REGEX.test(html)) {
+                    mathPreviewContainer.style.display = 'none';
+                    mathPreviewContent.innerHTML = '';
+                    return;
+                }
+                mathPreviewContainer.style.display = 'block';
+                mathPreviewContent.innerHTML = html;
+                applyMathRendering(mathPreviewContent);
+            };
             answerInput.oninput = () => {
                 isContentModified = true;
                 let textLength = answerInput.textContent.length;
                 charCount.textContent = `${textLength} 个字符`;
                 updateAnswerWithContent(question, answerInput.innerHTML);
+                updateMathPreview();
             };
-            let answerContent = '';
-            question.answer_items.forEach(item => {
+            const answerFragments = [];
+            for (const item of question.answer_items || []) {
+                if (!item) continue;
                 try {
-                    const jsonContent = JSON.parse(item.answer);
-                    if (jsonContent && jsonContent.blocks) {
-                        jsonContent.blocks.forEach(block => {
-                            if (block.type === 'atomic' && block.data && block.data.type === 'IMAGE') {
-                                let imageSrc = block.data.src;
-                                let fileIdMatch = imageSrc.match(/\/cloud\/file_access\/(\d+)/);
-                                if (fileIdMatch && fileIdMatch[1]) {
-                                    let fileId = fileIdMatch[1];
-                                    let randomParam = Date.now();
-                                    let imageUrl = `${window.location.origin}/api/jx-oresource/cloud/file_access/${fileId}?random=${randomParam}`;
-                                    answerContent += `
-                                    <div style="margin: 10px 0;">
-                                        <img src="${imageUrl}"
-                                            alt="选项图片"
-                                            style="max-width: 100%;
-                                                    height: auto;
-                                                    border-radius: 8px;
-                                                    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-                                                    transition: transform 0.3s ease;"
-                                            onmouseover="this.style.transform='scale(1.02)'"
-                                            onmouseout="this.style.transform='scale(1)'"
-                                            onerror="this.onerror=null; this.src='data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJub25lIiBzdHJva2U9IiM5OTkiIHN0cm9rZS13aWR0aD0iMiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIj48cmVjdCB4PSIzIiB5PSIzIiB3aWR0aD0iMTgiIGhlaWdodD0iMTgiIHJ4PSIyIiByeT0iMiI+PC9yZWN0PjxjaXJjbGUgY3g9IjguNSIgY3k9IjguNSIgcj0iMS41Ij48L2NpcmNsZT48cG9seWxpbmUgcG9pbnRzPSIyMSAxNSAxNiAxMCA1IDIxIj48L3BvbHlsaW5lPjwvc3ZnPg=='"/>
-                                    </div>`;
-                                } else {
-                                    answerContent += '<div style="color:#666;font-style:italic;">[图片加载失败]</div>';
-                                }
-                            } else {
-                                answerContent += block.text.replace(/\n/g, '<br>');
-                            }
-                        });
-                    } else {
-                        answerContent += item.answer || '';
+                    const parsedHtml = await parseRichTextContentAsync(item.answer);
+                    if (parsedHtml) {
+                        answerFragments.push(parsedHtml.trim());
                     }
-                } catch (e) {
-                    answerContent += item.answer || '';
+                } catch (error) {
+                    console.warn('[富文本解析] 解析主观题答案时出错，使用原始内容回退。', error);
+                    if (item.answer) {
+                        answerFragments.push(escapeHtml(String(item.answer)).replace(/\n/g, '<br>'));
+                    }
                 }
-                answerContent += '<br><br>';
-            });
-            answerInput.innerHTML = answerContent.trim();
+            }
+            answerInput.innerHTML = answerFragments.join('<br><br>').trim();
             let initialTextLength = answerInput.textContent.length;
             charCount.textContent = `${initialTextLength} 个字符`;
             let decorativeLine = document.createElement('div');
@@ -8243,6 +8509,8 @@
             inputContainer.appendChild(answerInput);
             inputContainer.appendChild(buttonContainer);
             inputContainer.appendChild(decorativeLine);
+            inputContainer.appendChild(mathPreviewContainer);
+            updateMathPreview();
             let thinkingProcessDiv = document.createElement('div');
             thinkingProcessDiv.className = 'ai-thinking-process';
             thinkingProcessDiv.style.marginTop = '15px';
@@ -8839,7 +9107,7 @@
                 headerLine.appendChild(titleHeader);
                 titleWrapper.appendChild(headerLine);
                 const titleContent = document.createElement('div');
-                titleContent.innerHTML = await parseRichTextContentAsync(question.title);
+                await setRichTextContent(titleContent, question.title);
                 titleContent.style.cssText = `
                     font-size: 16px;
                     line-height: 1.6;
@@ -8880,7 +9148,7 @@
                 } else if (question.type === 4) {
                     handleFillInBlankQuestion(question, questionContainer, createAIButton);
                 } else if ([6].includes(question.type)) {
-                    handleTextQuestion(question, questionContainer, createAIButton);
+                    await handleTextQuestion(question, questionContainer, createAIButton);
                 } else if (question.type === 9 && question.subQuestions?.length) {
                     let subQuestionsContainer = document.createElement('div');
                     subQuestionsContainer.style.display = 'flex';
@@ -8952,7 +9220,7 @@
                         subHeaderLine.appendChild(subTitleHeader);
                         subTitleWrapper.appendChild(subHeaderLine);
                         const subTitleContent = document.createElement('div');
-                        subTitleContent.innerHTML = await parseRichTextContentAsync(subQuestion.title);
+                        await setRichTextContent(subTitleContent, subQuestion.title);
                         subTitleContent.style.cssText = `
                             font-size: 15px;
                             line-height: 1.6;
@@ -8988,7 +9256,7 @@
                         } else if (subQuestion.type === 4) {
                             handleFillInBlankQuestion(subQuestion, subQuestionBox, createAIButton);
                         } else if ([6].includes(subQuestion.type)) {
-                            handleTextQuestion(subQuestion, subQuestionBox, createAIButton);
+                            await handleTextQuestion(subQuestion, subQuestionBox, createAIButton);
                         }
                         subQuestionBox.appendChild(createReportButton(subQuestion));
                         subQuestionsContainer.appendChild(subQuestionBox);
@@ -9207,7 +9475,7 @@
                         dragHandle.style.opacity = '0.5';
                         dragHandle.style.transition = 'opacity 0.2s ease';
                         let itemText = document.createElement('div');
-                        itemText.innerHTML = await parseRichTextContentAsync(item.value);
+                        await setRichTextContent(itemText, item.value);
                         itemText.style.flex = '1';
                         itemText.style.color = '#1f2937';
                         itemText.style.fontSize = '15px';
@@ -9327,7 +9595,7 @@
                         leftLabel.textContent = String.fromCharCode(65 + idx) + '.';
                         leftLabel.style.cssText = 'margin-right: 12px; font-weight: 600; color: #6366f1; font-size: 16px; width: 24px;';
                         let leftContent = document.createElement('div');
-                        leftContent.innerHTML = await parseRichTextContentAsync(leftItem.value);
+                        await setRichTextContent(leftContent, leftItem.value);
                         leftContent.style.cssText = 'flex: 1; color: #1e293b; font-size: 15px; font-weight: 500; line-height: 1.6;';
                         let chipContainer = document.createElement('div');
                         chipContainer.style.cssText = 'display: flex; flex-wrap: wrap; gap: 8px;';
@@ -9379,7 +9647,7 @@
                                     chipLetter.textContent = `${rightItemData.letter}.`;
                                     chipLetter.style.cssText = 'margin-right: 8px; flex-shrink: 0;';
                                     const chipContent = document.createElement('div');
-                                    chipContent.innerHTML = await parseRichTextContentAsync(rightItemData.content);
+                                    await setRichTextContent(chipContent, rightItemData.content);
                                     chipContent.style.flex = '1';
                                     const innerDivs = chipContent.querySelectorAll('div');
                                     innerDivs.forEach(div => {
@@ -9439,10 +9707,19 @@
                             };
                             let optionContent = document.createElement('div');
                             optionContent.style.cssText = 'flex: 1; display: flex; align-items: center;';
-                            optionContent.innerHTML = `
-                                <span style="font-weight:600; color:#6366f1; margin-right:12px; font-size:14px;">${String.fromCharCode(97 + rIdx)}.</span>
-                                <span style="color:#1e293b; font-size:14px; font-weight:500;">${await parseRichTextContentAsync(rightItem.value)}</span>
-                            `;
+                            const optionLetter = document.createElement('span');
+                            optionLetter.style.cssText = 'font-weight:600; color:#6366f1; margin-right:12px; font-size:14px;';
+                            optionLetter.textContent = `${String.fromCharCode(97 + rIdx)}.`;
+                            const optionValue = document.createElement('span');
+                            optionValue.style.cssText = 'color:#1e293b; font-size:14px; font-weight:500;';
+                            await setRichTextContent(optionValue, rightItem.value);
+                            optionValue.querySelectorAll('div').forEach(div => {
+                                div.style.margin = '0';
+                                div.style.padding = '0';
+                                div.style.display = 'inline';
+                            });
+                            optionContent.appendChild(optionLetter);
+                            optionContent.appendChild(optionValue);
                             dropdownOption.appendChild(checkbox);
                             dropdownOption.appendChild(optionContent);
                             dropdownOption.onclick = (e) => {
@@ -10254,7 +10531,7 @@
                 color: #374151;
                 font-size: 15px;
             `;
-            descriptionContent.innerHTML = await parseRichTextContentAsync(paperDescription);
+            await setRichTextContent(descriptionContent, paperDescription);
             attachSttOnlyButtonListeners(descriptionContent);
             attachVideoSttButtonListeners(descriptionContent);
             details.appendChild(summary);
@@ -10805,7 +11082,7 @@
     function mdEscape(text) {
         if (text == null) return '';
         const sanitized = String(text).replace(/[\x00-\x1F\x7F\u200B-\u200D\uFEFF]/g, '');
-        return sanitized.replace(/([\\`*_{}\[\]()#+.!>])/g, '\\$1');
+        return sanitized.replace(/([`*_{}\[\]()#+.!>])/g, '\\$1');
     }
     async function parseRichTextToMarkdown(content) {
         if (!content || typeof content !== 'string' || content === '{}' || isEmptyRichText(content)) {
@@ -10821,56 +11098,109 @@
             if (!jsonContent.blocks || !Array.isArray(jsonContent.blocks)) {
                 return mdEscape(String(content));
             }
+            const entityMap = jsonContent.entityMap || {};
             const parts = [];
             for (const block of jsonContent.blocks) {
-                if (block.type === 'atomic' && block.data && block.data.type === 'IMAGE') {
-                    let imageSrc = block.data.src;
-                    let fileIdMatch = imageSrc && imageSrc.match(/.*cloud\/file_access\/(\d+)/);
-                    if (fileIdMatch && fileIdMatch[1]) {
-                        let fileId = fileIdMatch[1];
-                        let randomParam = Date.now();
-                        let imageUrl = `${window.location.origin}/api/jx-oresource/cloud/file_access/${fileId}?random=${randomParam}`;
-                        parts.push(`![图片](${imageUrl})`);
-                    } else {
-                        parts.push('[无法解析图片链接]');
+                if (!block) continue;
+                if (block.type === 'atomic' && block.data) {
+                    const mathAtomic = getMathInfoFromAtomicBlock(block);
+                    if (mathAtomic) {
+                        parts.push(mathAtomic.display ? `$$\n${mathAtomic.tex}\n$$` : `\\(${mathAtomic.tex}\\)`);
+                        continue;
                     }
-                } else if (block.type === 'atomic' && block.data && (block.data.type === 'AUDIO' || block.data.type === 'VIDEO')) {
-                    let mediaUrl = null;
-                    if (block.data.type === 'AUDIO' && block.data.data && block.data.data.quote_id) {
-                        const fileId = block.data.data.quote_id;
-                        const cacheKey = `audio_url_${fileId}`;
-                        mediaUrl = sessionStorage.getItem(cacheKey);
+                    if (block.data.type === 'IMAGE') {
+                        const imageSrc = block.data.src;
+                        const fileIdMatch = imageSrc && imageSrc.match(/.*cloud\/file_access\/(\d+)/);
+                        if (fileIdMatch && fileIdMatch[1]) {
+                            const fileId = fileIdMatch[1];
+                            const randomParam = Date.now();
+                            const imageUrl = `${window.location.origin}/api/jx-oresource/cloud/file_access/${fileId}?random=${randomParam}`;
+                            parts.push(`![图片](${imageUrl})`);
+                        } else {
+                            parts.push('[无法解析图片链接]');
+                        }
+                        continue;
+                    }
+                    if (block.data.type === 'AUDIO' || block.data.type === 'VIDEO') {
+                        let mediaUrl = null;
+                        if (block.data.type === 'AUDIO' && block.data.data && block.data.data.quote_id) {
+                            const fileId = block.data.data.quote_id;
+                            const cacheKey = `audio_url_${fileId}`;
+                            mediaUrl = sessionStorage.getItem(cacheKey);
+                            if (!mediaUrl) {
+                                mediaUrl = await getAudioUrl(fileId);
+                                if (mediaUrl) sessionStorage.setItem(cacheKey, mediaUrl);
+                            }
+                        } else if (block.data.type === 'VIDEO' && block.data.data && block.data.data.video_id) {
+                            const videoId = block.data.data.video_id;
+                            const cacheKey = `video_urls_${videoId}`;
+                            let urls = null;
+                            try {
+                                urls = JSON.parse(sessionStorage.getItem(cacheKey) || 'null');
+                            } catch (err) {
+                                urls = null;
+                            }
+                            if (!urls) {
+                                urls = await getVideoUrl(videoId);
+                                if (urls && urls.videoUrl) sessionStorage.setItem(cacheKey, JSON.stringify(urls));
+                            }
+                            mediaUrl = urls && urls.videoUrl ? urls.videoUrl : null;
+                        }
                         if (!mediaUrl) {
-                            mediaUrl = await getAudioUrl(fileId);
-                            if (mediaUrl) sessionStorage.setItem(cacheKey, mediaUrl);
-                        }
-                    } else if (block.data.type === 'VIDEO' && block.data.data && block.data.data.video_id) {
-                        const videoId = block.data.data.video_id;
-                        const cacheKey = `video_urls_${videoId}`;
-                        let urls = JSON.parse(sessionStorage.getItem(cacheKey) || 'null');
-                        if (!urls) {
-                            urls = await getVideoUrl(videoId);
-                            if (urls && urls.videoUrl) sessionStorage.setItem(cacheKey, JSON.stringify(urls));
-                        }
-                        mediaUrl = urls && urls.videoUrl ? urls.videoUrl : null;
-                    }
-                    if (!mediaUrl) {
-                        let src = block.data.src || block.data.url || (block.data.data && (block.data.data.src || block.data.data.url));
-                        if (src) {
-                            const fileIdMatch = String(src).match(/.*cloud\/file_access\/(\d+)/);
-                            if (fileIdMatch && fileIdMatch[1]) {
-                                const randomParam = Date.now();
-                                mediaUrl = `${window.location.origin}/api/jx-oresource/cloud/file_access/${fileIdMatch[1]}?random=${randomParam}`;
-                            } else if (/^https?:\/\//i.test(String(src))) {
-                                mediaUrl = String(src);
+                            const fallbackSrc = block.data.src || block.data.url || (block.data.data && (block.data.data.src || block.data.data.url));
+                            if (fallbackSrc) {
+                                const match = String(fallbackSrc).match(/.*cloud\/file_access\/(\d+)/);
+                                if (match && match[1]) {
+                                    const randomParam = Date.now();
+                                    mediaUrl = `${window.location.origin}/api/jx-oresource/cloud/file_access/${match[1]}?random=${randomParam}`;
+                                } else if (/^https?:\/\//i.test(String(fallbackSrc))) {
+                                    mediaUrl = String(fallbackSrc);
+                                }
                             }
                         }
+                        const label = block.data.type === 'AUDIO' ? '音频' : '视频';
+                        parts.push(mediaUrl ? `[${label}](${mediaUrl})` : `[${label}] 未提供可访问链接`);
+                        continue;
                     }
-                    const label = block.data.type === 'AUDIO' ? '音频' : '视频';
-                    parts.push(mediaUrl ? `[${label}](${mediaUrl})` : `[${label}] 未提供可访问链接`);
-                } else {
-                    const txt = (block.text || '').replace(/[\x00-\x1F\x7F]/g, '');
-                    if (txt.trim() !== '') parts.push(mdEscape(txt));
+                }
+                const segments = extractSegmentsFromBlock(block, entityMap);
+                if (!segments.length) {
+                    continue;
+                }
+                const blockPieces = [];
+                let inlineBuffer = '';
+                if (block.type === 'unordered-list-item') {
+                    inlineBuffer += '- ';
+                } else if (block.type === 'ordered-list-item') {
+                    inlineBuffer += '1. ';
+                }
+                segments.forEach(segment => {
+                    switch (segment.type) {
+                        case 'text':
+                            inlineBuffer += mdEscape(segment.text);
+                            break;
+                        case 'inlineMath':
+                            inlineBuffer += `\\(${segment.text}\\)`;
+                            break;
+                        case 'displayMath':
+                            if (inlineBuffer.trim().length > 0) {
+                                blockPieces.push(inlineBuffer);
+                                inlineBuffer = '';
+                            }
+                            blockPieces.push(`$$\n${segment.text}\n$$`);
+                            break;
+                        case 'lineBreak':
+                            inlineBuffer += '  \n';
+                            break;
+                        default:
+                            break;
+                    }
+                });
+                if (inlineBuffer.trim().length > 0 || /\S/.test(inlineBuffer)) {
+                    blockPieces.push(inlineBuffer);
+                }
+                if (blockPieces.length > 0) {
+                    parts.push(blockPieces.join('\n\n'));
                 }
             }
             return parts.join('\n\n');
@@ -11156,11 +11486,109 @@
             showNotification('导出 Markdown 失败，请查看控制台日志。', { type: 'error', animation: 'scale' });
         }
     }
+    function extractTexContent(source) {
+        if (!source) return '';
+        if (typeof source === 'string') return source;
+        if (typeof source === 'object') {
+            return source.teX || source.tex || source.value || source.content || '';
+        }
+        return '';
+    }
+    function isInlineMathEntity(type) {
+        const normalized = (type || '').toUpperCase();
+        return normalized === 'INLINETEX' || normalized === 'INLINE_TEX' || normalized === 'TEX';
+    }
+    function isDisplayMathEntity(type) {
+        const normalized = (type || '').toUpperCase();
+        return normalized === 'BLOCKTEX' || normalized === 'TEXBLOCK' || normalized === 'DISPLAYTEX';
+    }
+    function getMathInfoFromEntity(entity) {
+        if (!entity) return null;
+        const mathPayload = extractTexContent(entity.data) || extractTexContent(entity.data?.data);
+        if (!mathPayload) return null;
+        if (isInlineMathEntity(entity.type)) {
+            return { tex: mathPayload, display: false };
+        }
+        if (isDisplayMathEntity(entity.type)) {
+            return { tex: mathPayload, display: true };
+        }
+        return null;
+    }
+    function getMathInfoFromAtomicBlock(block) {
+        if (!block || !block.data) return null;
+        const type = (block.data.type || '').toUpperCase();
+        if (!type) return null;
+        if (type === 'MATH' || type === 'TEX' || type === 'TEXBLOCK' || type === 'DISPLAYTEX') {
+            const tex = extractTexContent(block.data) || extractTexContent(block.data.data);
+            if (!tex) return null;
+            return { tex, display: true };
+        }
+        if (type === 'INLINETEX' || type === 'INLINE_TEX') {
+            const tex = extractTexContent(block.data) || extractTexContent(block.data.data);
+            if (!tex) return null;
+            return { tex, display: false };
+        }
+        return null;
+    }
+    function extractSegmentsFromBlock(block, entityMap) {
+        const segments = [];
+        const text = typeof block.text === 'string' ? block.text : '';
+        const breakpoints = new Set([0, text.length]);
+        const zeroLengthMathRanges = [];
+        if (Array.isArray(block.entityRanges)) {
+            block.entityRanges.forEach(range => {
+                if (!range || typeof range.offset !== 'number' || typeof range.length !== 'number') return;
+                breakpoints.add(range.offset);
+                breakpoints.add(range.offset + range.length);
+                if (range.length === 0) {
+                    zeroLengthMathRanges.push(range);
+                }
+            });
+        }
+        for (let i = 0; i < text.length; i++) {
+            if (text[i] === '\n') {
+                breakpoints.add(i);
+                breakpoints.add(i + 1);
+            }
+        }
+        const sortedBreakpoints = Array.from(breakpoints)
+            .filter(index => index >= 0 && index <= text.length)
+            .sort((a, b) => a - b);
+        for (let i = 0; i < sortedBreakpoints.length - 1; i++) {
+            const start = sortedBreakpoints[i];
+            const end = sortedBreakpoints[i + 1];
+            if (start >= end) continue;
+            const segmentText = text.slice(start, end);
+            if (!segmentText) continue;
+            if (segmentText === '\n') {
+                segments.push({ type: 'lineBreak' });
+                continue;
+            }
+            const entity = findEntityCoveringRange(block.entityRanges || [], start, end, entityMap);
+            const mathInfo = getMathInfoFromEntity(entity);
+            if (mathInfo) {
+                segments.push({ type: mathInfo.display ? 'displayMath' : 'inlineMath', text: mathInfo.tex });
+                continue;
+            }
+            const sanitized = segmentText.replace(/[\x00-\x1F\x7F]/g, '');
+            if (sanitized) {
+                segments.push({ type: 'text', text: sanitized });
+            }
+        }
+        zeroLengthMathRanges.forEach(range => {
+            const entity = getEntityByKey(entityMap, range.key);
+            const mathInfo = getMathInfoFromEntity(entity);
+            if (mathInfo) {
+                segments.push({ type: mathInfo.display ? 'displayMath' : 'inlineMath', text: mathInfo.tex });
+            }
+        });
+        return segments;
+    }
     async function parseRichTextToParagraphs(content) {
         if (!content || typeof content !== 'string' || content === '{}' || isEmptyRichText(content)) {
             return [];
         }
-        let paragraphs = [];
+        const paragraphs = [];
         try {
             let jsonContent;
             try {
@@ -11180,95 +11608,167 @@
                 }));
                 return paragraphs;
             }
+            const entityMap = jsonContent.entityMap || {};
             for (const block of jsonContent.blocks) {
-                if (block.type === 'atomic' && block.data && block.data.type === 'IMAGE') {
-                    let imageSrc = block.data.src;
-                    let fileIdMatch = imageSrc.match(/.*cloud\/file_access\/(\d+)/);
-                    if (fileIdMatch && fileIdMatch[1]) {
-                        let fileId = fileIdMatch[1];
-                        let randomParam = Date.now();
-                        let imageUrl = `${window.location.origin}/api/jx-oresource/cloud/file_access/${fileId}?random=${randomParam}`;
-                        const imageData = await fetchImageData(imageUrl);
-                        if (imageData) {
-                            const imageSize = await getImageSize(imageData);
-                            if (imageSize) {
-                                let { width, height } = imageSize;
-                                const maxWidth = 450;
-                                if (width > maxWidth) {
-                                    const ratio = maxWidth / width;
-                                    width = maxWidth;
-                                    height = height * ratio;
+                if (!block) continue;
+                if (block.type === 'atomic' && block.data) {
+                    const mathAtomic = getMathInfoFromAtomicBlock(block);
+                    if (mathAtomic) {
+                        const mathImage = await createLatexImageRun(mathAtomic.tex, mathAtomic.display);
+                        if (mathImage) {
+                            paragraphs.push(new Paragraph({
+                                children: [mathImage],
+                                alignment: mathAtomic.display ? AlignmentType.CENTER : AlignmentType.LEFT,
+                            }));
+                        } else {
+                            paragraphs.push(new Paragraph({
+                                children: [new TextRun({
+                                    text: mathAtomic.display ? `\\[${mathAtomic.tex}\\]` : `\\(${mathAtomic.tex}\\)`,
+                                    font: "Cambria Math"
+                                })],
+                                alignment: mathAtomic.display ? AlignmentType.CENTER : AlignmentType.LEFT,
+                            }));
+                        }
+                        continue;
+                    }
+                    if (block.data.type === 'IMAGE') {
+                        const imageSrc = block.data.src;
+                        const fileIdMatch = imageSrc && imageSrc.match(/.*cloud\/file_access\/(\d+)/);
+                        if (fileIdMatch && fileIdMatch[1]) {
+                            const fileId = fileIdMatch[1];
+                            const randomParam = Date.now();
+                            const imageUrl = `${window.location.origin}/api/jx-oresource/cloud/file_access/${fileId}?random=${randomParam}`;
+                            const imageData = await fetchImageData(imageUrl);
+                            if (imageData) {
+                                const imageSize = await getImageSize(imageData);
+                                if (imageSize) {
+                                    let { width, height } = imageSize;
+                                    const maxWidth = 450;
+                                    if (width > maxWidth) {
+                                        const ratio = maxWidth / width;
+                                        width = maxWidth;
+                                        height = height * ratio;
+                                    }
+                                    paragraphs.push(new Paragraph({
+                                        children: [new ImageRun({ data: imageData, transformation: { width, height } })],
+                                        alignment: AlignmentType.CENTER,
+                                    }));
+                                } else {
+                                    paragraphs.push(new Paragraph({ text: '[图片加载失败]' }));
                                 }
-                                paragraphs.push(new Paragraph({
-                                    children: [new ImageRun({
-                                        data: imageData,
-                                        transformation: { width, height },
-                                    })],
-                                    alignment: AlignmentType.CENTER,
-                                }));
                             } else {
                                 paragraphs.push(new Paragraph({ text: '[图片加载失败]' }));
                             }
                         } else {
-                            paragraphs.push(new Paragraph({ text: '[图片加载失败]' }));
+                            paragraphs.push(new Paragraph({ text: '[无法解析图片链接]' }));
                         }
-                    } else {
-                        paragraphs.push(new Paragraph({ text: '[无法解析图片链接]' }));
+                        continue;
                     }
-                } else if (block.type === 'atomic' && block.data && (block.data.type === 'AUDIO' || block.data.type === 'VIDEO')) {
-                    let mediaUrl = null;
-                    if (block.data.type === 'AUDIO' && block.data.data && block.data.data.quote_id) {
-                        const fileId = block.data.data.quote_id;
-                        const cacheKey = `audio_url_${fileId}`;
-                        mediaUrl = sessionStorage.getItem(cacheKey);
+                    if (block.data.type === 'AUDIO' || block.data.type === 'VIDEO') {
+                        let mediaUrl = null;
+                        if (block.data.type === 'AUDIO' && block.data.data && block.data.data.quote_id) {
+                            const fileId = block.data.data.quote_id;
+                            const cacheKey = `audio_url_${fileId}`;
+                            mediaUrl = sessionStorage.getItem(cacheKey);
+                            if (!mediaUrl) {
+                                mediaUrl = await getAudioUrl(fileId);
+                                if (mediaUrl) sessionStorage.setItem(cacheKey, mediaUrl);
+                            }
+                        } else if (block.data.type === 'VIDEO' && block.data.data && block.data.data.video_id) {
+                            const videoId = block.data.data.video_id;
+                            const cacheKey = `video_urls_${videoId}`;
+                            let urls = null;
+                            try {
+                                urls = JSON.parse(sessionStorage.getItem(cacheKey) || 'null');
+                            } catch (err) {
+                                urls = null;
+                            }
+                            if (!urls) {
+                                urls = await getVideoUrl(videoId);
+                                if (urls && urls.videoUrl) sessionStorage.setItem(cacheKey, JSON.stringify(urls));
+                            }
+                            mediaUrl = urls && urls.videoUrl ? urls.videoUrl : null;
+                        }
                         if (!mediaUrl) {
-                            mediaUrl = await getAudioUrl(fileId);
-                            if (mediaUrl) sessionStorage.setItem(cacheKey, mediaUrl);
-                        }
-                    } else if (block.data.type === 'VIDEO' && block.data.data && block.data.data.video_id) {
-                        const videoId = block.data.data.video_id;
-                        const cacheKey = `video_urls_${videoId}`;
-                        let urls = JSON.parse(sessionStorage.getItem(cacheKey) || 'null');
-                        if (!urls) {
-                            urls = await getVideoUrl(videoId);
-                            if (urls && urls.videoUrl) sessionStorage.setItem(cacheKey, JSON.stringify(urls));
-                        }
-                        mediaUrl = urls && urls.videoUrl ? urls.videoUrl : null;
-                    }
-                    if (!mediaUrl) {
-                        let src = block.data.src || block.data.url || (block.data.data && (block.data.data.src || block.data.data.url));
-                        if (src) {
-                            const fileIdMatch = String(src).match(/.*cloud\/file_access\/(\d+)/);
-                            if (fileIdMatch && fileIdMatch[1]) {
-                                const randomParam = Date.now();
-                                mediaUrl = `${window.location.origin}/api/jx-oresource/cloud/file_access/${fileIdMatch[1]}?random=${randomParam}`;
-                            } else if (/^https?:\/\//i.test(String(src))) {
-                                mediaUrl = String(src);
+                            const fallbackSrc = block.data.src || block.data.url || (block.data.data && (block.data.data.src || block.data.data.url));
+                            if (fallbackSrc) {
+                                const match = String(fallbackSrc).match(/.*cloud\/file_access\/(\d+)/);
+                                if (match && match[1]) {
+                                    const randomParam = Date.now();
+                                    mediaUrl = `${window.location.origin}/api/jx-oresource/cloud/file_access/${match[1]}?random=${randomParam}`;
+                                } else if (/^https?:\/\//i.test(String(fallbackSrc))) {
+                                    mediaUrl = String(fallbackSrc);
+                                }
                             }
                         }
+                        const label = block.data.type === 'AUDIO' ? '音频' : '视频';
+                        if (mediaUrl) {
+                            paragraphs.push(new Paragraph({
+                                children: [
+                                    new TextRun({ text: `[${label}] `, bold: true }),
+                                    createDocxHyperlink(mediaUrl)
+                                ]
+                            }));
+                        } else {
+                            const idHint = block.data.data && (block.data.data.quote_id || block.data.data.id) ? ` (ID: ${block.data.data.quote_id || block.data.data.id})` : '';
+                            paragraphs.push(new Paragraph({ text: `[${label}] 未提供可访问链接${idHint}` }));
+                        }
+                        continue;
                     }
-                    const label = block.data.type === 'AUDIO' ? '音频' : '视频';
-                    if (mediaUrl) {
-                        paragraphs.push(new Paragraph({
-                            children: [
-                                new TextRun({ text: `[${label}] `, bold: true }),
-                                createDocxHyperlink(mediaUrl)
-                            ]
-                        }));
-                    } else {
-                        const idHint = block.data.data && (block.data.data.quote_id || block.data.data.id) ? ` (ID: ${block.data.data.quote_id || block.data.data.id})` : '';
-                        paragraphs.push(new Paragraph({ text: `[${label}] 未提供可访问链接${idHint}` }));
-                    }
-                } else {
-                    const sanitizedText = (block.text || '').replace(/[\x00-\x1F\x7F]/g, '');
-                    paragraphs.push(new Paragraph({
-                        children: [new TextRun({
-                            text: sanitizedText,
-                            font: "Microsoft YaHei",
-                            eastAsia: "Microsoft YaHei"
-                        })],
-                    }));
                 }
+                const segments = extractSegmentsFromBlock(block, entityMap);
+                if (!segments.length) {
+                    continue;
+                }
+                let currentRuns = [];
+                const flushCurrentParagraph = () => {
+                    if (currentRuns.length === 0) return;
+                    paragraphs.push(new Paragraph({ children: currentRuns }));
+                    currentRuns = [];
+                };
+                if (block.type === 'unordered-list-item') {
+                    currentRuns.push(new TextRun({ text: '• ', font: "Microsoft YaHei", eastAsia: "Microsoft YaHei" }));
+                } else if (block.type === 'ordered-list-item') {
+                    currentRuns.push(new TextRun({ text: '1. ', font: "Microsoft YaHei", eastAsia: "Microsoft YaHei" }));
+                }
+                for (const segment of segments) {
+                    switch (segment.type) {
+                        case 'text':
+                            currentRuns.push(new TextRun({ text: segment.text, font: "Microsoft YaHei", eastAsia: "Microsoft YaHei" }));
+                            break;
+                        case 'inlineMath': {
+                            const mathImage = await createLatexImageRun(segment.text, false);
+                            if (mathImage) {
+                                currentRuns.push(mathImage);
+                            } else {
+                                currentRuns.push(new TextRun({ text: `\\(${segment.text}\\)`, font: "Cambria Math" }));
+                            }
+                            break;
+                        }
+                        case 'displayMath': {
+                            flushCurrentParagraph();
+                            const mathImage = await createLatexImageRun(segment.text, true);
+                            if (mathImage) {
+                                paragraphs.push(new Paragraph({
+                                    children: [mathImage],
+                                    alignment: AlignmentType.CENTER,
+                                }));
+                            } else {
+                                paragraphs.push(new Paragraph({
+                                    children: [new TextRun({ text: `\\[${segment.text}\\]`, font: "Cambria Math" })],
+                                    alignment: AlignmentType.CENTER,
+                                }));
+                            }
+                            break;
+                        }
+                        case 'lineBreak':
+                            currentRuns.push(new TextRun({ break: 1 }));
+                            break;
+                        default:
+                            break;
+                    }
+                }
+                flushCurrentParagraph();
             }
         } catch (e) {
             console.error("解析富文本到段落时出错:", e, "原始内容:", content);
@@ -11304,83 +11804,151 @@
                 }
                 return runs;
             }
+            const entityMap = jsonContent.entityMap || {};
             let isFirstBlock = true;
             for (const block of jsonContent.blocks) {
-                if (!isFirstBlock) {
-                    runs.push(new TextRun({ break: 1 }));
-                }
-                isFirstBlock = false;
-                if (block.type === 'atomic' && block.data && block.data.type === 'IMAGE') {
-                    let imageSrc = block.data.src;
-                    let fileIdMatch = imageSrc.match(/.*cloud\/file_access\/(\d+)/);
-                    if (fileIdMatch && fileIdMatch[1]) {
-                        let fileId = fileIdMatch[1];
-                        let randomParam = Date.now();
-                        let imageUrl = `${window.location.origin}/api/jx-oresource/cloud/file_access/${fileId}?random=${randomParam}`;
-                        const imageData = await fetchImageData(imageUrl);
-                        if (imageData) {
-                            const imageSize = await getImageSize(imageData);
-                            if (imageSize) {
-                                let { width, height } = imageSize;
-                                const maxWidth = 450;
-                                if (width > maxWidth) {
-                                    const ratio = maxWidth / width;
-                                    width = maxWidth;
-                                    height = height * ratio;
+                if (!block) continue;
+                const prependLineBreak = () => {
+                    if (!isFirstBlock) {
+                        runs.push(new TextRun({ break: 1 }));
+                    }
+                    isFirstBlock = false;
+                };
+                if (block.type === 'atomic' && block.data) {
+                    const mathAtomic = getMathInfoFromAtomicBlock(block);
+                    if (mathAtomic) {
+                        prependLineBreak();
+                        const mathImage = await createLatexImageRun(mathAtomic.tex, mathAtomic.display);
+                        if (mathImage) {
+                            runs.push(mathImage);
+                        } else {
+                            runs.push(new TextRun({
+                                text: mathAtomic.display ? `\\[${mathAtomic.tex}\\]` : `\\(${mathAtomic.tex}\\)`,
+                                font: "Cambria Math"
+                            }));
+                        }
+                        continue;
+                    }
+                    if (block.data.type === 'IMAGE') {
+                        prependLineBreak();
+                        const imageSrc = block.data.src;
+                        const fileIdMatch = imageSrc && imageSrc.match(/.*cloud\/file_access\/(\d+)/);
+                        if (fileIdMatch && fileIdMatch[1]) {
+                            const fileId = fileIdMatch[1];
+                            const randomParam = Date.now();
+                            const imageUrl = `${window.location.origin}/api/jx-oresource/cloud/file_access/${fileId}?random=${randomParam}`;
+                            const imageData = await fetchImageData(imageUrl);
+                            if (imageData) {
+                                const imageSize = await getImageSize(imageData);
+                                if (imageSize) {
+                                    let { width, height } = imageSize;
+                                    const maxWidth = 450;
+                                    if (width > maxWidth) {
+                                        const ratio = maxWidth / width;
+                                        width = maxWidth;
+                                        height = height * ratio;
+                                    }
+                                    runs.push(new ImageRun({ data: imageData, transformation: { width, height } }));
+                                } else {
+                                    runs.push(new TextRun({ text: '[图片加载失败]' }));
                                 }
-                                runs.push(new ImageRun({ data: imageData, transformation: { width, height } }));
                             } else {
                                 runs.push(new TextRun({ text: '[图片加载失败]' }));
                             }
                         } else {
-                            runs.push(new TextRun({ text: '[图片加载失败]' }));
+                            runs.push(new TextRun({ text: '[无法解析图片链接]' }));
                         }
-                    } else {
-                        runs.push(new TextRun({ text: '[无法解析图片链接]' }));
+                        continue;
                     }
-                } else if (block.type === 'atomic' && block.data && (block.data.type === 'AUDIO' || block.data.type === 'VIDEO')) {
-                    let mediaUrl = null;
-                    if (block.data.type === 'AUDIO' && block.data.data && block.data.data.quote_id) {
-                        const fileId = block.data.data.quote_id;
-                        const cacheKey = `audio_url_${fileId}`;
-                        mediaUrl = sessionStorage.getItem(cacheKey);
+                    if (block.data.type === 'AUDIO' || block.data.type === 'VIDEO') {
+                        prependLineBreak();
+                        let mediaUrl = null;
+                        if (block.data.type === 'AUDIO' && block.data.data && block.data.data.quote_id) {
+                            const fileId = block.data.data.quote_id;
+                            const cacheKey = `audio_url_${fileId}`;
+                            mediaUrl = sessionStorage.getItem(cacheKey);
+                            if (!mediaUrl) {
+                                mediaUrl = await getAudioUrl(fileId);
+                                if (mediaUrl) sessionStorage.setItem(cacheKey, mediaUrl);
+                            }
+                        } else if (block.data.type === 'VIDEO' && block.data.data && block.data.data.video_id) {
+                            const videoId = block.data.data.video_id;
+                            const cacheKey = `video_urls_${videoId}`;
+                            let urls = null;
+                            try {
+                                urls = JSON.parse(sessionStorage.getItem(cacheKey) || 'null');
+                            } catch (err) {
+                                urls = null;
+                            }
+                            if (!urls) {
+                                urls = await getVideoUrl(videoId);
+                                if (urls && urls.videoUrl) sessionStorage.setItem(cacheKey, JSON.stringify(urls));
+                            }
+                            mediaUrl = urls && urls.videoUrl ? urls.videoUrl : null;
+                        }
                         if (!mediaUrl) {
-                            mediaUrl = await getAudioUrl(fileId);
-                            if (mediaUrl) sessionStorage.setItem(cacheKey, mediaUrl);
-                        }
-                    } else if (block.data.type === 'VIDEO' && block.data.data && block.data.data.video_id) {
-                        const videoId = block.data.data.video_id;
-                        const cacheKey = `video_urls_${videoId}`;
-                        let urls = JSON.parse(sessionStorage.getItem(cacheKey) || 'null');
-                        if (!urls) {
-                            urls = await getVideoUrl(videoId);
-                            if (urls && urls.videoUrl) sessionStorage.setItem(cacheKey, JSON.stringify(urls));
-                        }
-                        mediaUrl = urls && urls.videoUrl ? urls.videoUrl : null;
-                    }
-                    if (!mediaUrl) {
-                        let src = block.data.src || block.data.url || (block.data.data && (block.data.data.src || block.data.data.url));
-                        if (src) {
-                            const fileIdMatch = String(src).match(/.*cloud\/file_access\/(\d+)/);
-                            if (fileIdMatch && fileIdMatch[1]) {
-                                const randomParam = Date.now();
-                                mediaUrl = `${window.location.origin}/api/jx-oresource/cloud/file_access/${fileIdMatch[1]}?random=${randomParam}`;
-                            } else if (/^https?:\/\//i.test(String(src))) {
-                                mediaUrl = String(src);
+                            const fallbackSrc = block.data.src || block.data.url || (block.data.data && (block.data.data.src || block.data.data.url));
+                            if (fallbackSrc) {
+                                const match = String(fallbackSrc).match(/.*cloud\/file_access\/(\d+)/);
+                                if (match && match[1]) {
+                                    const randomParam = Date.now();
+                                    mediaUrl = `${window.location.origin}/api/jx-oresource/cloud/file_access/${match[1]}?random=${randomParam}`;
+                                } else if (/^https?:\/\//i.test(String(fallbackSrc))) {
+                                    mediaUrl = String(fallbackSrc);
+                                }
                             }
                         }
+                        const label = block.data.type === 'AUDIO' ? '音频' : '视频';
+                        if (mediaUrl) {
+                            runs.push(new TextRun({ text: `[${label}] `, bold: true }));
+                            runs.push(createDocxHyperlink(mediaUrl));
+                        } else {
+                            const idHint = block.data.data && (block.data.data.quote_id || block.data.data.id) ? ` (ID: ${block.data.data.quote_id || block.data.data.id})` : '';
+                            runs.push(new TextRun({ text: `[${label}] 未提供可访问链接${idHint}` }));
+                        }
+                        continue;
                     }
-                    const label = block.data.type === 'AUDIO' ? '音频' : '视频';
-                    if (mediaUrl) {
-                        runs.push(new TextRun({ text: `[${label}] `, bold: true }));
-                        runs.push(createDocxHyperlink(mediaUrl));
-                    } else {
-                        const idHint = block.data.data && (block.data.data.quote_id || block.data.data.id) ? ` (ID: ${block.data.data.quote_id || block.data.data.id})` : '';
-                        runs.push(new TextRun({ text: `[${label}] 未提供可访问链接${idHint}` }));
+                }
+                const segments = extractSegmentsFromBlock(block, entityMap);
+                if (!segments.length) {
+                    prependLineBreak();
+                    continue;
+                }
+                prependLineBreak();
+                if (block.type === 'unordered-list-item') {
+                    runs.push(new TextRun({ text: '• ', font: "Microsoft YaHei", eastAsia: "Microsoft YaHei" }));
+                } else if (block.type === 'ordered-list-item') {
+                    runs.push(new TextRun({ text: '1. ', font: "Microsoft YaHei", eastAsia: "Microsoft YaHei" }));
+                }
+                for (const segment of segments) {
+                    switch (segment.type) {
+                        case 'text':
+                            runs.push(new TextRun({ text: segment.text, font: "Microsoft YaHei", eastAsia: "Microsoft YaHei" }));
+                            break;
+                        case 'inlineMath': {
+                            const mathImage = await createLatexImageRun(segment.text, false);
+                            if (mathImage) {
+                                runs.push(mathImage);
+                            } else {
+                                runs.push(new TextRun({ text: `\\(${segment.text}\\)`, font: "Cambria Math" }));
+                            }
+                            break;
+                        }
+                        case 'displayMath': {
+                            const mathImage = await createLatexImageRun(segment.text, true);
+                            if (mathImage) {
+                                runs.push(mathImage);
+                            } else {
+                                runs.push(new TextRun({ text: `\\[${segment.text}\\]`, font: "Cambria Math" }));
+                            }
+                            break;
+                        }
+                        case 'lineBreak':
+                            runs.push(new TextRun({ break: 1 }));
+                            break;
+                        default:
+                            break;
                     }
-                } else {
-                    const sanitizedText = (block.text || '').replace(/[\x00-\x1F\x7F]/g, '');
-                    runs.push(new TextRun({ text: sanitizedText, font: "Microsoft YaHei", eastAsia: "Microsoft YaHei" }));
                 }
             }
         } catch (e) {
@@ -11396,12 +11964,77 @@
         if (!content) return '';
         try {
             const jsonContent = JSON.parse(content);
-            if (jsonContent && Array.isArray(jsonContent.blocks)) {
-                return jsonContent.blocks.map(block => block.text || '').join('\n').trim();
+            if (!jsonContent || !Array.isArray(jsonContent.blocks)) {
+                return String(content).trim();
             }
+            const entityMap = jsonContent.entityMap || {};
+            let activeListType = null;
+            let orderedListCounter = 0;
+            const resultParts = [];
+            const closeList = () => {
+                if (activeListType) {
+                    resultParts.push('');
+                    activeListType = null;
+                    orderedListCounter = 0;
+                }
+            };
+            jsonContent.blocks.forEach(block => {
+                if (!block) return;
+                const blockType = block.type || 'unstyled';
+                if (blockType === 'atomic') {
+                    closeList();
+                    const dataType = (block.data?.type || '').toUpperCase();
+                    if (dataType === 'IMAGE' && block.data?.src) {
+                        const fileIdMatch = block.data.src.match(/file_access\/(\d+)/);
+                        resultParts.push(fileIdMatch ? `[图片:${fileIdMatch[1]}]` : '[图片]');
+                    } else if (dataType === 'VIDEO' && block.data?.data?.video_id) {
+                        resultParts.push(`[视频:${block.data.data.video_id}]`);
+                    } else if (dataType === 'AUDIO' && block.data?.data?.quote_id) {
+                        resultParts.push(`[音频:${block.data.data.quote_id}]`);
+                    }
+                    return;
+                }
+                const inlineHtml = buildInlineHtml(block, entityMap) || '';
+                const plainText = htmlToPlainText(inlineHtml);
+                switch (blockType) {
+                    case 'unordered-list-item':
+                        if (activeListType !== 'unordered-list-item') {
+                            closeList();
+                            activeListType = 'unordered-list-item';
+                        }
+                        resultParts.push(`- ${plainText}`);
+                        break;
+                    case 'ordered-list-item':
+                        if (activeListType !== 'ordered-list-item') {
+                            closeList();
+                            activeListType = 'ordered-list-item';
+                            orderedListCounter = 1;
+                        } else {
+                            orderedListCounter += 1;
+                        }
+                        resultParts.push(`${orderedListCounter}. ${plainText}`);
+                        break;
+                    case 'header-one':
+                    case 'header-two':
+                    case 'header-three':
+                    case 'header-four':
+                    case 'blockquote':
+                    case 'code-block':
+                    default:
+                        closeList();
+                        resultParts.push(plainText);
+                        break;
+                }
+            });
+            return resultParts
+                .filter(segment => segment !== undefined && segment !== null)
+                .map(segment => String(segment).trim())
+                .filter(segment => segment !== '')
+                .join('\n')
+                .trim();
         } catch (e) {
+            return String(content).trim();
         }
-        return String(content).trim();
     }
     function deepParseJsonString(str) {
         if (typeof str !== 'string' || str.trim() === '') {
@@ -11425,6 +12058,17 @@
             return str;
         }
     }
+    function htmlToPlainText(htmlString) {
+        if (!htmlString) return '';
+        const tempDiv = document.createElement('div');
+        tempDiv.innerHTML = htmlString;
+        const textContent = tempDiv.textContent || tempDiv.innerText || '';
+        return textContent
+            .replace(/\u00a0/g, ' ')
+            .replace(/\s+\n/g, '\n')
+            .replace(/\n{3,}/g, '\n\n')
+            .trim();
+    }
     async function parseRichTextToMultimodalContent(richTextContent) {
         const content = [];
         if (!richTextContent || richTextContent === '{}') return content;
@@ -11434,10 +12078,8 @@
                 content.push({ type: 'text', text: String(richTextContent) });
                 return content;
             }
+            const entityMap = jsonContent.entityMap || {};
             for (const block of jsonContent.blocks) {
-                if (block.text) {
-                    content.push({ type: 'text', text: block.text });
-                }
                 if (block.type === 'atomic' && block.data?.type === 'IMAGE' && block.data.src) {
                     let imageSrc = block.data.src;
                     let fileIdMatch = imageSrc.match(/.*cloud\/file_access\/(\d+)/);
@@ -11455,6 +12097,22 @@
                         console.warn('[Vision] 无法从src中解析出图片fileId:', imageSrc);
                         content.push({ type: 'text', text: '[无法解析图片链接]' });
                     }
+                    continue;
+                }
+                const singleBlockContent = {
+                    blocks: [block],
+                    entityMap
+                };
+                let parsedText = '';
+                try {
+                    const blockHtml = await parseRichTextContentAsync(JSON.stringify(singleBlockContent));
+                    parsedText = htmlToPlainText(blockHtml);
+                } catch (error) {
+                    console.warn('[富文本解析] 转换块为文本时出错，使用原始文本回退。', error);
+                    parsedText = String(block.text || '').trim();
+                }
+                if (parsedText) {
+                    content.push({ type: 'text', text: parsedText });
                 }
             }
         } catch (e) {
@@ -11525,23 +12183,85 @@
                 .trim()
                 .replace(/\s+/g, ' ');
         };
+        const extractTex = (data = {}) => {
+            return data.teX || data.tex || data.value || data.content || '';
+        };
+        const describeEntity = (entity) => {
+            if (!entity || typeof entity !== 'object') return '';
+            const type = (entity.type || '').toUpperCase();
+            const data = entity.data || {};
+            if (type === 'INLINETEX' || type === 'INLINE_TEX' || type === 'TEX') {
+                const tex = extractTex(data);
+                return tex ? `TEX:${tex}` : '';
+            }
+            if (type === 'BLOCKTEX' || type === 'TEXBLOCK' || type === 'DISPLAYTEX') {
+                const tex = extractTex(data);
+                return tex ? `TEXBLOCK:${tex}` : '';
+            }
+            if (type === 'IMAGE' || type === 'IMG') {
+                if (data.src) {
+                    const match = String(data.src).match(/file_access\/(\d+)/);
+                    return match ? `[IMAGE:${match[1]}]` : `[IMAGE:${data.src}]`;
+                }
+            }
+            if (type === 'AUDIO' && data.quote_id) {
+                return `[AUDIO:${data.quote_id}]`;
+            }
+            if (type === 'VIDEO' && data.video_id) {
+                return `[VIDEO:${data.video_id}]`;
+            }
+            return '';
+        };
+        const getEntityByKey = (entityMap, key) => {
+            if (!entityMap) return null;
+            if (Object.prototype.hasOwnProperty.call(entityMap, key)) return entityMap[key];
+            const stringKey = String(key);
+            if (Object.prototype.hasOwnProperty.call(entityMap, stringKey)) return entityMap[stringKey];
+            return null;
+        };
         if (typeof richText !== 'string' || richText.trim() === '') return '';
         try {
             const jsonContent = JSON.parse(richText);
             if (jsonContent && Array.isArray(jsonContent.blocks)) {
-                const content = jsonContent.blocks.map(block => {
+                const entityMap = jsonContent.entityMap || {};
+                const parts = jsonContent.blocks.map(block => {
+                    if (!block) return '';
+                    const blockParts = [];
+                    const blockText = typeof block.text === 'string' ? block.text : '';
                     if (block.type === 'atomic' && block.data) {
-                        if (block.data.type === 'IMAGE' && block.data.src) {
-                            const fileIdMatch = block.data.src.match(/file_access\/(\d+)/);
-                            return fileIdMatch ? `[IMAGE:${fileIdMatch[1]}]` : '';
-                        }
-                        if (block.data.type === 'AUDIO' && block.data.data?.quote_id) {
-                            return `[AUDIO:${block.data.data.quote_id}]`;
+                        const dataType = String(block.data.type || '').toUpperCase();
+                        if (dataType === 'IMAGE' && block.data.src) {
+                            const fileIdMatch = String(block.data.src).match(/file_access\/(\d+)/);
+                            blockParts.push(fileIdMatch ? `[IMAGE:${fileIdMatch[1]}]` : '[IMAGE]');
+                        } else if (dataType === 'AUDIO' && block.data.data?.quote_id) {
+                            blockParts.push(`[AUDIO:${block.data.data.quote_id}]`);
+                        } else if (dataType === 'VIDEO' && block.data.data?.video_id) {
+                            blockParts.push(`[VIDEO:${block.data.data.video_id}]`);
+                        } else if (dataType.includes('TEX')) {
+                            const texFromAtomic = extractTex(block.data) || extractTex(block.data.data);
+                            if (texFromAtomic) {
+                                blockParts.push(`TEXBLOCK:${texFromAtomic}`);
+                            }
                         }
                     }
-                    return block.text || '';
-                }).join('');
-                return cleanAndNormalize(content);
+                    if (blockText) {
+                        blockParts.push(blockText);
+                    }
+                    if (Array.isArray(block.entityRanges) && block.entityRanges.length > 0) {
+                        block.entityRanges.forEach(range => {
+                            if (!range) return;
+                            const entity = getEntityByKey(entityMap, range.key);
+                            if (!entity) return;
+                            const segment = (typeof blockText === 'string') ? blockText.slice(range.offset || 0, (range.offset || 0) + (range.length || 0)) : '';
+                            const marker = describeEntity(entity);
+                            if (marker && (!segment || segment.trim() === '')) {
+                                blockParts.push(marker);
+                            }
+                        });
+                    }
+                    return blockParts.join(' ');
+                }).filter(Boolean).join(' ');
+                return cleanAndNormalize(parts);
             }
         } catch (e) {
             return cleanAndNormalize(richText);
@@ -11610,6 +12330,90 @@
                 reject(new Error('无法加载图片'));
             };
             img.src = url;
+        });
+    }
+    async function getLatexImage(tex, displayMode) {
+        if (!tex || typeof tex !== 'string') {
+            return null;
+        }
+        const normalized = tex.trim();
+        if (!normalized) {
+            return null;
+        }
+        const cacheKey = `${displayMode ? 'D' : 'I'}|${normalized}`;
+        if (latexImageCache.has(cacheKey)) {
+            return await latexImageCache.get(cacheKey);
+        }
+        const fetchPromise = (async () => {
+            try {
+                const prefix = '\\dpi{200} ' + (displayMode ? '\\displaystyle ' : '');
+                const query = `${prefix}${normalized}`;
+                const url = `${LATEX_IMAGE_ENDPOINT}${encodeURIComponent(query)}`;
+                const response = await fetch(url, { method: 'GET' });
+                if (!response.ok) {
+                    throw new Error(`请求失败，状态码 ${response.status}`);
+                }
+                const blob = await response.blob();
+                const arrayBuffer = await blob.arrayBuffer();
+                const data = new Uint8Array(arrayBuffer);
+                let dimensions = null;
+                try {
+                    dimensions = await getImageSize(data);
+                } catch (dimensionError) {
+                    console.warn('获取公式图片尺寸失败，将使用默认尺寸。', dimensionError);
+                }
+                return { data, dimensions };
+            } catch (error) {
+                console.error('渲染 LaTeX 为图片失败:', error, '公式:', tex);
+                return null;
+            }
+        })();
+        latexImageCache.set(cacheKey, fetchPromise);
+        const result = await fetchPromise;
+        if (result === null) {
+            latexImageCache.set(cacheKey, Promise.resolve(null));
+        }
+        return result;
+    }
+    async function createLatexImageRun(tex, displayMode) {
+        const imageInfo = await getLatexImage(tex, displayMode);
+        if (!imageInfo) {
+            return null;
+        }
+        let width = imageInfo.dimensions?.width;
+        let height = imageInfo.dimensions?.height;
+        if (!width || !height) {
+            if (displayMode) {
+                width = 420;
+                height = 80;
+            } else {
+                width = 160;
+                height = 32;
+            }
+        }
+        if (displayMode) {
+            const maxWidth = 480;
+            if (width > maxWidth) {
+                const ratio = maxWidth / width;
+                width = maxWidth;
+                height = Math.max(20, Math.round(height * ratio));
+            }
+        } else {
+            const maxHeight = 36;
+            if (height > maxHeight) {
+                const ratio = maxHeight / height;
+                height = maxHeight;
+                width = Math.max(20, Math.round(width * ratio));
+            }
+        }
+        const finalWidth = Math.max(20, Math.round(width));
+        const finalHeight = Math.max(displayMode ? 20 : 16, Math.round(height));
+        return new ImageRun({
+            data: imageInfo.data,
+            transformation: {
+                width: finalWidth,
+                height: finalHeight
+            }
         });
     }
     async function fetchImageData(url) {
@@ -11764,10 +12568,18 @@
                 "notes": "清华系大模型，综合能力优秀，提供免费额度，适合学术和企业应用。"
             },
             {
+                "id": "volcengine",
+                "name": "火山引擎",
+                "endpoint": "https://ark.cn-beijing.volces.com/api/v3/chat/completions",
+                "domain": "volcengine.com",
+                "category": "Domestic",
+                "notes": "火山引擎是字节跳动旗下的云与AI服务平台，聚焦豆包大模型和AI云原生技术。"
+            },
+            {
                 "id": "stepfun",
                 "name": "阶跃星辰 (StepFun)",
                 "endpoint": "https://api.stepfun.com/v1/chat/completions",
-                "domain": "stepfun.com",
+                "domain": "platform.stepfun.com",
                 "category": "Domestic",
                 "notes": "前微软团队打造，专注于超级智能体，提供免费额度，适合复杂任务。"
             },
@@ -11775,7 +12587,7 @@
                 "id": "ModelScope",
                 "name": "ModelScope 魔撘",
                 "endpoint": "https://api-inference.modelscope.cn/v1/chat/completions",
-                "domain": "modelscope.cn/",
+                "domain": "modelscope.cn",
                 "category": "Domestic",
                 "notes": "模型社区，支持多种开源模型推理，适合开发者实验和研究。"
             },
@@ -11870,8 +12682,59 @@
             wrapper.appendChild(optionsContainer);
             let currentValue = initialValue || '';
             let currentOptions = field.options || [];
+            let searchInput = null;
+            const syncOptionSelectionState = () => {
+                optionsContainer.querySelectorAll('.option').forEach(opt => {
+                    opt.classList.toggle('selected', opt.dataset.value === currentValue);
+                });
+            };
+            const updateSelectedDisplay = (value) => {
+                const selectedOptionData = currentOptions.find(opt => opt.value === value);
+                if (selectedOptionData) {
+                    const domain = selectedOptionData.domain;
+                    selectedContent.innerHTML = `
+                        ${domain ? `<img src="https://favicon.im/${domain}" alt="">` : ''}
+                        <span>${selectedOptionData.text}</span>
+                    `;
+                } else if (value) {
+                    selectedContent.innerHTML = `<span>${value}</span>`;
+                } else {
+                    selectedContent.innerHTML = '<span>请选择...</span>';
+                }
+            };
+            const setCurrentValue = (newValue, { triggerChange = true } = {}) => {
+                const normalizedValue = (newValue || '').trim();
+                if (currentValue !== normalizedValue) {
+                    currentValue = normalizedValue;
+                    if (triggerChange && typeof onValueChange === 'function') {
+                        onValueChange(currentValue);
+                    }
+                } else {
+                    currentValue = normalizedValue;
+                }
+                updateSelectedDisplay(currentValue);
+                syncOptionSelectionState();
+                if (searchInput) {
+                    searchInput.value = currentValue;
+                }
+            };
+            const commitManualInput = ({ triggerChange = true, closeDropdown = false } = {}) => {
+                if (!searchInput) return;
+                const manualValue = searchInput.value.trim();
+                if (!manualValue) {
+                    searchInput.value = currentValue;
+                    if (closeDropdown) {
+                        wrapper.classList.remove('open');
+                    }
+                    return;
+                }
+                setCurrentValue(manualValue, { triggerChange });
+                if (closeDropdown) {
+                    wrapper.classList.remove('open');
+                }
+            };
             if (field.searchable) {
-                const searchInput = document.createElement('input');
+                searchInput = document.createElement('input');
                 searchInput.type = 'text';
                 searchInput.placeholder = '搜索或输入模型ID...';
                 searchInput.className = 'custom-select-search';
@@ -11891,6 +12754,20 @@
                         const text = opt.textContent.toLowerCase();
                         opt.style.display = text.includes(searchTerm) ? 'flex' : 'none';
                     });
+                });
+                searchInput.addEventListener('keydown', (event) => {
+                    if (event.key === 'Enter') {
+                        event.preventDefault();
+                        commitManualInput({ closeDropdown: true });
+                    } else if (event.key === 'Escape') {
+                        wrapper.classList.remove('open');
+                        searchInput.value = currentValue;
+                    }
+                });
+                searchInput.addEventListener('blur', () => {
+                    if (!wrapper.classList.contains('open')) {
+                        commitManualInput({ triggerChange: false });
+                    }
                 });
                 optionsContainer.appendChild(searchInput);
             }
@@ -11914,18 +12791,6 @@
             optionsList.style.maxHeight = '180px';
             optionsList.style.overflowY = 'auto';
             optionsContainer.appendChild(optionsList);
-            const updateSelectedDisplay = (value) => {
-                const selectedOptionData = currentOptions.find(opt => opt.value === value);
-                if (selectedOptionData) {
-                    const domain = selectedOptionData.domain;
-                    selectedContent.innerHTML = `
-                        ${domain ? `<img src="https://favicon.im/${domain}" alt="">` : ''}
-                        <span>${selectedOptionData.text}</span>
-                    `;
-                } else {
-                    selectedContent.innerHTML = `<span>${value || '请选择...'}</span>`;
-                }
-            };
             const populateOptions = () => {
                 optionsList.innerHTML = '';
                 currentOptions.forEach(optionData => {
@@ -11945,12 +12810,7 @@
                         optionEl.classList.add('selected');
                     }
                     optionEl.addEventListener('click', () => {
-                        const newValue = optionData.value;
-                        if (currentValue !== newValue) {
-                            currentValue = newValue;
-                            updateSelectedDisplay(currentValue);
-                            if (onValueChange) onValueChange(currentValue);
-                        }
+                        setCurrentValue(optionData.value);
                         wrapper.classList.remove('open');
                     });
                     optionsList.appendChild(optionEl);
@@ -11958,42 +12818,43 @@
             };
             trigger.addEventListener('click', () => {
                 wrapper.classList.toggle('open');
+                if (wrapper.classList.contains('open') && searchInput) {
+                    setTimeout(() => searchInput.focus(), 0);
+                }
             });
             document.addEventListener('click', (e) => {
                 if (!wrapper.contains(e.target)) {
+                    if (wrapper.classList.contains('open')) {
+                        commitManualInput({ triggerChange: false });
+                    }
                     wrapper.classList.remove('open');
                 }
             });
             wrapper.getValue = () => {
-                const searchInput = wrapper.querySelector('.custom-select-search');
-                if (searchInput && searchInput.value && !currentOptions.some(opt => opt.value === searchInput.value)) {
-                    return searchInput.value;
+                if (searchInput) {
+                    const manualValue = searchInput.value.trim();
+                    if (manualValue && manualValue !== currentValue) {
+                        setCurrentValue(manualValue, { triggerChange: false });
+                    }
                 }
                 return currentValue;
             };
             wrapper.setValue = (newValue) => {
-                currentValue = newValue;
-                updateSelectedDisplay(newValue);
-                optionsContainer.querySelectorAll('.option').forEach(opt => {
-                    opt.classList.toggle('selected', opt.dataset.value === newValue);
-                });
-                const searchInput = wrapper.querySelector('.custom-select-search');
-                if (searchInput) {
-                    searchInput.value = newValue;
-                }
+                setCurrentValue(newValue, { triggerChange: false });
             };
             wrapper.setOptions = (newOptions, defaultValue = null) => {
                 currentOptions = newOptions || [];
-                if (defaultValue) {
-                    currentValue = defaultValue;
-                } else if (!currentOptions.some(opt => opt.value === currentValue)) {
-                    currentValue = currentOptions.length > 0 ? currentOptions[0].value : '';
-                }
                 populateOptions();
-                updateSelectedDisplay(currentValue);
+                let targetValue = currentValue;
+                if (defaultValue !== null && defaultValue !== undefined) {
+                    targetValue = defaultValue;
+                } else if (!currentOptions.some(opt => opt.value === currentValue)) {
+                    targetValue = currentOptions.length > 0 ? currentOptions[0].value : '';
+                }
+                setCurrentValue(targetValue, { triggerChange: false });
             };
             populateOptions();
-            updateSelectedDisplay(currentValue);
+            setCurrentValue(currentValue, { triggerChange: false });
             return wrapper;
         }
         let aiConfig = JSON.parse(localStorage.getItem('aiConfig') || '{}');
