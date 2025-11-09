@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         小雅答答答
 // @license      MIT
-// @version      2.9.7
+// @version      2.9.7.1
 // @description  小雅平台学习助手 📖，智能整理归纳学习资料 📚，辅助完成练习 💪，并提供便捷的查阅和修改功能 📝！
 // @author       Yi
 // @match        https://*.ai-augmented.com/*
@@ -22,6 +22,7 @@
 // @require      https://cdn.jsdmirror.com/npm/crypto-js@4.2.0/hmac-sha1.js
 // @require      https://cdn.jsdmirror.com/npm/dom-to-image-more@3.2.0/dist/dom-to-image-more.min.js
 // @require      https://cdn.jsdmirror.com/npm/katex@0.16.9/dist/contrib/auto-render.min.js
+// @require      https://cdn.jsdmirror.com/npm/mathjax@3/es5/tex-mml-chtml.js
 // @homepageURL  https://xiaoya.zygame1314.site
 // ==/UserScript==
 
@@ -11084,6 +11085,39 @@
         const sanitized = String(text).replace(/[\x00-\x1F\x7F\u200B-\u200D\uFEFF]/g, '');
         return sanitized.replace(/([`*_{}\[\]()#+.!>])/g, '\\$1');
     }
+    function normalizeInlineMath(tex) {
+        const trimmed = (tex || '').trim();
+        if (!trimmed) return '';
+        if (trimmed.startsWith('\\(') && trimmed.endsWith('\\)')) {
+            const inner = trimmed.slice(2, -2).trim();
+            return inner ? `$${inner}$` : '';
+        }
+        if (trimmed.startsWith('$$') && trimmed.endsWith('$$')) {
+            const inner = trimmed.slice(2, -2).trim();
+            return inner ? `$${inner}$` : '';
+        }
+        if (trimmed.startsWith('$') && trimmed.endsWith('$') && trimmed.length >= 2) {
+            return trimmed;
+        }
+        return `$${trimmed}$`;
+    }
+    function normalizeDisplayMath(tex) {
+        const trimmed = (tex || '').trim();
+        if (!trimmed) return '';
+        if (trimmed.startsWith('$$') && trimmed.endsWith('$$')) {
+            const inner = trimmed.slice(2, -2).trim();
+            return inner ? `$$\n${inner}\n$$` : '';
+        }
+        if (trimmed.startsWith('\\[') && trimmed.endsWith('\\]')) {
+            const inner = trimmed.slice(2, -2).trim();
+            return inner ? `$$\n${inner}\n$$` : '';
+        }
+        if (trimmed.startsWith('\\(') && trimmed.endsWith('\\)')) {
+            const inner = trimmed.slice(2, -2).trim();
+            return inner ? `$$\n${inner}\n$$` : '';
+        }
+        return `$$\n${trimmed}\n$$`;
+    }
     async function parseRichTextToMarkdown(content) {
         if (!content || typeof content !== 'string' || content === '{}' || isEmptyRichText(content)) {
             return '';
@@ -11105,7 +11139,10 @@
                 if (block.type === 'atomic' && block.data) {
                     const mathAtomic = getMathInfoFromAtomicBlock(block);
                     if (mathAtomic) {
-                        parts.push(mathAtomic.display ? `$$\n${mathAtomic.tex}\n$$` : `\\(${mathAtomic.tex}\\)`);
+                        const normalized = mathAtomic.display ? normalizeDisplayMath(mathAtomic.tex) : normalizeInlineMath(mathAtomic.tex);
+                        if (normalized) {
+                            parts.push(normalized);
+                        }
                         continue;
                     }
                     if (block.data.type === 'IMAGE') {
@@ -11180,14 +11217,24 @@
                             inlineBuffer += mdEscape(segment.text);
                             break;
                         case 'inlineMath':
-                            inlineBuffer += `\\(${segment.text}\\)`;
+                            {
+                                const normalized = normalizeInlineMath(segment.text);
+                                if (normalized) {
+                                    inlineBuffer += normalized;
+                                }
+                            }
                             break;
                         case 'displayMath':
                             if (inlineBuffer.trim().length > 0) {
                                 blockPieces.push(inlineBuffer);
                                 inlineBuffer = '';
                             }
-                            blockPieces.push(`$$\n${segment.text}\n$$`);
+                            {
+                                const displayMath = normalizeDisplayMath(segment.text);
+                                if (displayMath) {
+                                    blockPieces.push(displayMath);
+                                }
+                            }
                             break;
                         case 'lineBreak':
                             inlineBuffer += '  \n';
@@ -15187,7 +15234,6 @@
     const QuarkSearchManager = {
         SERVICE_TICKET_KEY: 'quark_service_ticket',
         TICKET_EXPIRY_KEY: 'quark_ticket_expiry',
-        TICKET_DURATION: 6 * 60 * 60 * 1000,
         _captchaScriptLoadingPromise: null,
         _gmRequest: function (details) {
             return new Promise((resolve, reject) => {
@@ -15217,8 +15263,7 @@
         },
         _getServiceTicket: function () {
             const ticket = localStorage.getItem(this.SERVICE_TICKET_KEY);
-            const expiry = localStorage.getItem(this.TICKET_EXPIRY_KEY);
-            if (ticket && expiry && Date.now() < parseInt(expiry, 10)) {
+            if (ticket) {
                 return ticket;
             }
             RuntimePatcher.blessedRemoveItem(localStorage, this.SERVICE_TICKET_KEY);
@@ -15227,7 +15272,7 @@
         },
         _setServiceTicket: function (ticket) {
             localStorage.setItem(this.SERVICE_TICKET_KEY, ticket);
-            localStorage.setItem(this.TICKET_EXPIRY_KEY, Date.now() + this.TICKET_DURATION);
+            localStorage.setItem(this.TICKET_EXPIRY_KEY, 'permanent');
         },
         _initiateLoginFlow: function () {
             return new Promise(async (resolve, reject) => {
