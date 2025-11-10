@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         小雅答答答
 // @license      MIT
-// @version      2.9.7.2
+// @version      2.9.7.3
 // @description  小雅平台学习助手 📖，智能整理归纳学习资料 📚，辅助完成练习 💪，并提供便捷的查阅和修改功能 📝！
 // @author       Yi
 // @match        https://*.ai-augmented.com/*
@@ -12879,10 +12879,7 @@
             });
             wrapper.getValue = () => {
                 if (searchInput) {
-                    const manualValue = searchInput.value.trim();
-                    if (manualValue && manualValue !== currentValue) {
-                        setCurrentValue(manualValue, { triggerChange: false });
-                    }
+                    return searchInput.value.trim();
                 }
                 return currentValue;
             };
