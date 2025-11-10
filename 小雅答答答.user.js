@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         小雅答答答
 // @license      MIT
-// @version      2.9.7.1
+// @version      2.9.7.2
 // @description  小雅平台学习助手 📖，智能整理归纳学习资料 📚，辅助完成练习 💪，并提供便捷的查阅和修改功能 📝！
 // @author       Yi
 // @match        https://*.ai-augmented.com/*
@@ -167,7 +167,7 @@
                 }
                 const NOTIFICATION_ID = `contribution-after-submit-${groupId}-${nodeId}`;
                 showNotification(
-                    '作业提交成功！请<strong>不要关闭页面</strong>，后台正在为你准备并贡献答案...',
+                    '作业提交成功！请不要关闭页面，后台正在为你准备并贡献答案...',
                     {
                         type: 'info',
                         duration: 0,
