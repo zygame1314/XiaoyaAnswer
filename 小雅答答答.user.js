@@ -7969,6 +7969,9 @@
                             break;
                         }
                         const { question, element } = questionsToProcess[i];
+                        if (aiConfig.autoScrollEnabled && element) {
+                            element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                        }
                         const questionType = getQuestionType(question.type);
                         const currentProgress = i + 1;
                         progress.update(currentProgress, totalQuestions, `[顺序] 处理 ${questionType}`);
@@ -8015,6 +8018,9 @@
                             const task = queue.shift();
                             const completedCount = processedCount + errorCount + cancelledCount;
                             const { question, element } = task;
+                            if (aiConfig.autoScrollEnabled && element) {
+                                element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                            }
                             const questionType = getQuestionType(question.type);
                             running++;
                             progress.update(completedCount, totalQuestions, `[并发] 处理 ${questionType}`);
@@ -9516,7 +9522,7 @@
                                 const before = answerCodeInput.value.substring(0, start);
                                 const after = answerCodeInput.value.substring(end);
                                 const lines = selectedText.split('\n');
-                                const indented = e.shiftKey 
+                                const indented = e.shiftKey
                                     ? lines.map(line => line.startsWith('    ') ? line.slice(4) : line).join('\n')
                                     : lines.map(line => '    ' + line).join('\n');
                                 answerCodeInput.value = before + indented + after;
