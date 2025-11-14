@@ -22,7 +22,6 @@
 // @require      https://cdn.jsdmirror.com/npm/crypto-js@4.2.0/hmac-sha1.js
 // @require      https://cdn.jsdmirror.com/npm/dom-to-image-more@3.2.0/dist/dom-to-image-more.min.js
 // @require      https://cdn.jsdmirror.com/npm/katex@0.16.9/dist/contrib/auto-render.min.js
-// @require      file://D:/HTML/XiaoyaAnswer/小雅答答答.user.js
 // @homepageURL  https://xiaoya.zygame1314.site
 // ==/UserScript==
 
