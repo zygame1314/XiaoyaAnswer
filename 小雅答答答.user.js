@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         小雅答答答
 // @license      MIT
-// @version      2.9.7.3
+// @version      2.9.8
 // @description  小雅平台学习助手 📖，智能整理归纳学习资料 📚，辅助完成练习 💪，并提供便捷的查阅和修改功能 📝！
 // @author       Yi
 // @match        https://*.ai-augmented.com/*
@@ -22,7 +22,7 @@
 // @require      https://cdn.jsdmirror.com/npm/crypto-js@4.2.0/hmac-sha1.js
 // @require      https://cdn.jsdmirror.com/npm/dom-to-image-more@3.2.0/dist/dom-to-image-more.min.js
 // @require      https://cdn.jsdmirror.com/npm/katex@0.16.9/dist/contrib/auto-render.min.js
-// @require      https://cdn.jsdmirror.com/npm/mathjax@3/es5/tex-mml-chtml.js
+// @require      file://D:/HTML/XiaoyaAnswer/小雅答答答.user.js
 // @homepageURL  https://xiaoya.zygame1314.site
 // ==/UserScript==
 
@@ -1491,6 +1491,47 @@
     function addGlobalStyles() {
         const style = document.createElement('style');
         style.textContent = `
+            .code-editor-wrapper {
+                position: relative;
+                font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+            }
+            .code-editor-wrapper textarea {
+                font-family: 'Consolas', 'Monaco', 'Courier New', monospace !important;
+                letter-spacing: 0.3px;
+            }
+            .code-editor-wrapper textarea::-webkit-scrollbar {
+                width: 12px;
+                height: 12px;
+            }
+            .code-editor-wrapper textarea::-webkit-scrollbar-track {
+                background: #1e1e1e;
+            }
+            .code-editor-wrapper textarea::-webkit-scrollbar-thumb {
+                background: #424242;
+                border-radius: 6px;
+            }
+            .code-editor-wrapper textarea::-webkit-scrollbar-thumb:hover {
+                background: #4e4e4e;
+            }
+            .code-line-numbers::-webkit-scrollbar {
+                display: none;
+            }
+            .code-editor-wrapper::before {
+                content: attr(data-language);
+                position: absolute;
+                top: 8px;
+                right: 12px;
+                background: rgba(99, 102, 241, 0.9);
+                color: white;
+                padding: 4px 12px;
+                border-radius: 6px;
+                font-size: 12px;
+                font-weight: 600;
+                z-index: 10;
+                pointer-events: none;
+                text-transform: uppercase;
+                box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+            }
             .image-upload-btn, .ai-assist-btn, .quark-search-btn{
                 padding: 8px 16px;
                 color: white;
@@ -4742,7 +4783,6 @@
         const finalApiKey = sttApiKey || llmApiKey;
         if (!finalApiKey) throw new Error("STT API Key 未配置（也未提供备用的 LLM Key）。");
         console.log(`[STT] 使用 [${sttProvider}] 提供商开始转录...`);
-        showNotification('🎧 语音转录中...', { type: 'info', duration: 10000 });
         try {
             switch (sttProvider) {
                 case 'openai_compatible':
@@ -7135,22 +7175,24 @@
         });
         let isResizing = false;
         let originalWidth, originalHeight, originalX, originalY;
-        resizeHandle.addEventListener('mousedown', (e) => {
+        const onResizeStart = (e) => {
             isResizing = true;
+            const point = e.touches ? e.touches[0] : e;
             const rect = modalContainer.getBoundingClientRect();
             originalWidth = rect.width;
             originalHeight = rect.height;
-            originalX = e.clientX;
-            originalY = e.clientY;
+            originalX = point.clientX;
+            originalY = point.clientY;
             modalContainer.style.transform = 'none';
             modalContainer.style.top = rect.top + 'px';
             modalContainer.style.left = rect.left + 'px';
             e.preventDefault();
-        });
-        document.addEventListener('mousemove', (e) => {
+        };
+        const onResizeMove = (e) => {
             if (!isResizing) return;
-            const newWidth = originalWidth + (e.clientX - originalX);
-            const newHeight = originalHeight + (e.clientY - originalY);
+            const point = e.touches ? e.touches[0] : e;
+            const newWidth = originalWidth + (point.clientX - originalX);
+            const newHeight = originalHeight + (point.clientY - originalY);
             const minWidth = 400;
             const minHeight = 300;
             if (newWidth >= minWidth) {
@@ -7159,10 +7201,16 @@
             if (newHeight >= minHeight) {
                 modalContainer.style.height = newHeight + 'px';
             }
-        });
-        document.addEventListener('mouseup', () => {
+        };
+        const onResizeEnd = () => {
             isResizing = false;
-        });
+        };
+        resizeHandle.addEventListener('mousedown', onResizeStart, false);
+        document.addEventListener('mousemove', onResizeMove, false);
+        document.addEventListener('mouseup', onResizeEnd, false);
+        resizeHandle.addEventListener('touchstart', onResizeStart, { passive: false });
+        document.addEventListener('touchmove', onResizeMove, { passive: false });
+        document.addEventListener('touchend', onResizeEnd, false);
         dragHandle.style.cssText = `
             position: absolute;
             top: 0;
@@ -7494,7 +7542,19 @@
                 if (questionTypeNum === 4) {
                     if (!targetElement) return { success: false, reason: "Target element for fill-in-blanks not found" };
                     try {
-                        const cleanedContent = answer.replace(/```json\n?([\s\S]+?)\n?```/g, '$1').trim();
+                        let cleanedContent = answer.trim();
+                        const jsonBlockPatterns = [
+                            /^```json\s*\n?([\s\S]+?)\n?\s*```$/,
+                            /^```\s*\n?([\s\S]+?)\n?\s*```$/,
+                            /^```([\s\S]+?)```$/
+                        ];
+                        for (const pattern of jsonBlockPatterns) {
+                            const match = cleanedContent.match(pattern);
+                            if (match) {
+                                cleanedContent = match[1].trim();
+                                break;
+                            }
+                        }
                         const answers = JSON.parse(cleanedContent);
                         if (!Array.isArray(answers)) {
                             throw new Error("AI返回的不是一个数组");
@@ -7563,8 +7623,19 @@
                         return { success: false, reason: `AI 未识别有效选项: ${answer}` };
                     }
                 } else if (questionTypeNum === 10 && targetElement) {
-                    const codeBlockMatch = answer.match(/^```(?:\w*\n)?([\s\S]*?)```$/);
-                    const code = codeBlockMatch ? codeBlockMatch[1].trim() : answer.trim();
+                    let code = answer.trim();
+                    const codeBlockPatterns = [
+                        /^```[\w]*\n?([\s\S]*?)\n?```$/,
+                        /^```\n([\s\S]*?)\n```$/,
+                        /^```([\s\S]*?)```$/
+                    ];
+                    for (const pattern of codeBlockPatterns) {
+                        const match = code.match(pattern);
+                        if (match) {
+                            code = match[1].trim();
+                            break;
+                        }
+                    }
                     targetElement.value = code;
                     if (question.program_setting) {
                         question.program_setting.code_answer = code;
@@ -7572,13 +7643,30 @@
                         question.program_setting = { code_answer: code };
                     }
                     targetElement.dispatchEvent(new Event('input', { bubbles: true }));
+                    const codeEditor = targetElement.closest('.code-editor-wrapper');
+                    if (codeEditor) {
+                        const event = new Event('input', { bubbles: true });
+                        targetElement.dispatchEvent(event);
+                    }
                 } else if ([6].includes(questionTypeNum) && targetElement) {
                     targetElement.innerHTML = answer.replace(/\n/g, '<br>');
                     updateAnswerWithContent(question, targetElement.innerHTML);
                     targetElement.dispatchEvent(new Event('input', { bubbles: true }));
                 } else if (questionTypeNum === 12 && targetElement) {
                     try {
-                        const cleanedContent = answer.replace(/```json\n?([\s\S]+?)\n?```/g, '$1').trim();
+                        let cleanedContent = answer.trim();
+                        const jsonBlockPatterns = [
+                            /^```json\s*\n?([\s\S]+?)\n?\s*```$/,
+                            /^```\s*\n?([\s\S]+?)\n?\s*```$/,
+                            /^```([\s\S]+?)```$/
+                        ];
+                        for (const pattern of jsonBlockPatterns) {
+                            const match = cleanedContent.match(pattern);
+                            if (match) {
+                                cleanedContent = match[1].trim();
+                                break;
+                            }
+                        }
                         const orderedLetters = JSON.parse(cleanedContent);
                         if (!Array.isArray(orderedLetters)) {
                             throw new Error("AI返回的不是一个数组");
@@ -7617,7 +7705,19 @@
                     }
                 } else if (questionTypeNum === 13 && targetElement) {
                     try {
-                        const cleanedContent = answer.replace(/```json\n?([\s\S]+?)\n?```/g, '$1').trim();
+                        let cleanedContent = answer.trim();
+                        const jsonBlockPatterns = [
+                            /^```json\s*\n?([\s\S]+?)\n?\s*```$/,
+                            /^```\s*\n?([\s\S]+?)\n?\s*```$/,
+                            /^```([\s\S]+?)```$/
+                        ];
+                        for (const pattern of jsonBlockPatterns) {
+                            const match = cleanedContent.match(pattern);
+                            if (match) {
+                                cleanedContent = match[1].trim();
+                                break;
+                            }
+                        }
                         const matches = JSON.parse(cleanedContent);
                         const leftItems = question.answer_items.filter(item => !item.is_target_opt);
                         const rightItems = question.answer_items.filter(item => item.is_target_opt);
@@ -8320,6 +8420,7 @@
             answerInput.style.display = 'block';
             answerInput.style.boxSizing = 'border-box';
             answerInput.style.overflow = 'auto';
+            answerInput.style.resize = 'vertical';
             answerInput.style.whiteSpace = 'pre-wrap';
             answerInput.style.wordBreak = 'break-word';
             const mathPreviewContainer = document.createElement('div');
@@ -9346,26 +9447,117 @@
                     answerCodeContainer.innerHTML = '<strong>答案代码:</strong>';
                     answerCodeContainer.style.fontWeight = '600';
                     answerCodeContainer.style.marginBottom = '8px';
+                    const codeEditorWrapper = document.createElement('div');
+                    codeEditorWrapper.className = 'code-editor-wrapper';
+                    codeEditorWrapper.setAttribute('data-language', progSetting?.language?.[0] || 'Code');
+                    codeEditorWrapper.style.cssText = `
+                        width: 100%;
+                        border: 1px solid #d1d5db;
+                        border-radius: 8px;
+                        overflow: hidden;
+                        background-color: #1e1e1e;
+                        position: relative;
+                        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+                    `;
+                    const lineNumbers = document.createElement('div');
+                    lineNumbers.className = 'code-line-numbers';
+                    lineNumbers.style.cssText = `
+                        position: absolute;
+                        left: 0;
+                        top: 0;
+                        width: 50px;
+                        height: 100%;
+                        background-color: #252526;
+                        color: #858585;
+                        font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+                        font-size: 14px;
+                        line-height: 1.6;
+                        padding: 12px 8px;
+                        text-align: right;
+                        border-right: 1px solid #3e3e3e;
+                        user-select: none;
+                        overflow: hidden;
+                    `;
                     let answerCodeInput = document.createElement('textarea');
                     answerCodeInput.value = progSetting?.code_answer || '';
-                    answerCodeInput.style.width = '100%';
-                    answerCodeInput.style.minHeight = '200px';
-                    answerCodeInput.style.padding = '12px';
-                    answerCodeInput.style.border = '1px solid #d1d5db';
-                    answerCodeInput.style.borderRadius = '8px';
-                    answerCodeInput.style.fontSize = '14px';
-                    answerCodeInput.style.lineHeight = '1.5';
-                    answerCodeInput.style.resize = 'vertical';
-                    answerCodeInput.style.boxSizing = 'border-box';
-                    answerCodeInput.oninput = () => {
+                    answerCodeInput.style.cssText = `
+                        width: 100%;
+                        min-height: 350px;
+                        padding: 12px 12px 12px 62px;
+                        border: none;
+                        font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+                        font-size: 14px;
+                        line-height: 1.6;
+                        resize: vertical;
+                        box-sizing: border-box;
+                        background-color: transparent;
+                        color: #d4d4d4;
+                        tab-size: 4;
+                        outline: none;
+                        position: relative;
+                        z-index: 1;
+                    `;
+                    answerCodeInput.setAttribute('spellcheck', 'false');
+                    answerCodeInput.setAttribute('autocomplete', 'off');
+                    answerCodeInput.setAttribute('autocorrect', 'off');
+                    answerCodeInput.setAttribute('autocapitalize', 'off');
+                    function updateLineNumbers() {
+                        const lines = answerCodeInput.value.split('\n');
+                        const lineCount = lines.length;
+                        lineNumbers.innerHTML = Array.from({ length: lineCount }, (_, i) => i + 1).join('<br>');
+                    }
+                    updateLineNumbers();
+                    answerCodeInput.addEventListener('keydown', (e) => {
+                        if (e.key === 'Tab') {
+                            e.preventDefault();
+                            const start = answerCodeInput.selectionStart;
+                            const end = answerCodeInput.selectionEnd;
+                            const selectedText = answerCodeInput.value.substring(start, end);
+                            if (selectedText.includes('\n')) {
+                                const before = answerCodeInput.value.substring(0, start);
+                                const after = answerCodeInput.value.substring(end);
+                                const lines = selectedText.split('\n');
+                                const indented = e.shiftKey 
+                                    ? lines.map(line => line.startsWith('    ') ? line.slice(4) : line).join('\n')
+                                    : lines.map(line => '    ' + line).join('\n');
+                                answerCodeInput.value = before + indented + after;
+                                answerCodeInput.selectionStart = start;
+                                answerCodeInput.selectionEnd = start + indented.length;
+                            } else {
+                                if (e.shiftKey) {
+                                    const lineStart = answerCodeInput.value.lastIndexOf('\n', start - 1) + 1;
+                                    const lineEnd = answerCodeInput.value.indexOf('\n', start);
+                                    const currentLine = answerCodeInput.value.substring(lineStart, lineEnd === -1 ? undefined : lineEnd);
+                                    if (currentLine.startsWith('    ')) {
+                                        const before = answerCodeInput.value.substring(0, lineStart);
+                                        const after = answerCodeInput.value.substring(lineEnd === -1 ? answerCodeInput.value.length : lineEnd);
+                                        answerCodeInput.value = before + currentLine.slice(4) + after;
+                                        answerCodeInput.selectionStart = answerCodeInput.selectionEnd = Math.max(lineStart, start - 4);
+                                    }
+                                } else {
+                                    answerCodeInput.value = answerCodeInput.value.substring(0, start) + '    ' + answerCodeInput.value.substring(end);
+                                    answerCodeInput.selectionStart = answerCodeInput.selectionEnd = start + 4;
+                                }
+                            }
+                            updateLineNumbers();
+                            answerCodeInput.dispatchEvent(new Event('input'));
+                        }
+                    });
+                    answerCodeInput.addEventListener('input', () => {
                         isContentModified = true;
                         if (question.program_setting) {
                             question.program_setting.code_answer = answerCodeInput.value;
                         } else {
                             question.program_setting = { code_answer: answerCodeInput.value };
                         }
-                    };
-                    answerCodeContainer.appendChild(answerCodeInput);
+                        updateLineNumbers();
+                    });
+                    answerCodeInput.addEventListener('scroll', () => {
+                        lineNumbers.scrollTop = answerCodeInput.scrollTop;
+                    });
+                    codeEditorWrapper.appendChild(lineNumbers);
+                    codeEditorWrapper.appendChild(answerCodeInput);
+                    answerCodeContainer.appendChild(codeEditorWrapper);
                     programmingContainer.appendChild(answerCodeContainer);
                     let aiButtonContainer = document.createElement('div');
                     aiButtonContainer.style.display = 'flex';
@@ -9798,7 +9990,7 @@
                 if (SUPPORTED_CONTRIBUTION_TYPES.includes(question.type)) {
                     questionContainer.appendChild(createReportButton(question));
                 }
-                if (![6, 9, 10].includes(question.type)) {
+                if (![6, 9].includes(question.type)) {
                     const quarkButton = document.createElement('button');
                     quarkButton.className = 'quark-search-btn';
                     quarkButton.innerHTML = `
@@ -15153,26 +15345,38 @@
         const lines = responseText.trim().split('\n');
         let confidence = null;
         let answer = responseText.trim();
-        let lastNonEmptyLineIndex = -1;
+        let confidenceLineIndex = -1;
         for (let i = lines.length - 1; i >= 0; i--) {
-            if (lines[i].trim() !== '') {
-                lastNonEmptyLineIndex = i;
-                break;
+            const trimmedLine = lines[i].trim();
+            if (trimmedLine === '' || /^```[\w]*$/.test(trimmedLine)) {
+                continue;
             }
-        }
-        if (lastNonEmptyLineIndex !== -1) {
-            const potentialJsonLine = lines[lastNonEmptyLineIndex].trim();
             try {
-                const parsedLine = JSON.parse(potentialJsonLine);
+                const parsedLine = JSON.parse(trimmedLine);
                 if (parsedLine && typeof parsedLine.confidence === 'number') {
                     const score = parsedLine.confidence;
                     if (score >= 1 && score <= 5) {
                         confidence = Math.round(score);
-                        answer = lines.slice(0, lastNonEmptyLineIndex).join('\n').trim();
+                        confidenceLineIndex = i;
+                        break;
                     }
                 }
             } catch (e) {
+                break;
             }
+        }
+        if (confidenceLineIndex !== -1) {
+            let answerEndIndex = confidenceLineIndex;
+            for (let i = confidenceLineIndex - 1; i >= 0; i--) {
+                const trimmedLine = lines[i].trim();
+                if (trimmedLine === '' || /^```$/.test(trimmedLine)) {
+                    answerEndIndex = i;
+                } else {
+                    break;
+                }
+            }
+            answer = lines.slice(0, answerEndIndex).join('\n').trim();
+            answer = answer.replace(/\n*```\s*$/g, '').trim();
         }
         return { answer, confidence };
     }
