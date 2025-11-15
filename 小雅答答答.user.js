@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         小雅答答答
 // @license      MIT
-// @version      2.9.8.2
+// @version      2.9.9
 // @description  小雅平台学习助手 📖，智能整理归纳学习资料 📚，辅助完成练习 💪，并提供便捷的查阅和修改功能 📝！
 // @author       Yi
 // @match        https://*.ai-augmented.com/*
@@ -333,7 +333,6 @@
         }
     };
     RuntimePatcher.run();
-    const KATEX_CSS_URL = 'https://cdn.jsdmirror.com/npm/katex@0.16.9/dist/katex.min.css';
     const KATEX_RENDER_OPTIONS = {
         delimiters: [
             { left: '$$', right: '$$', display: true },
@@ -348,26 +347,8 @@
     };
     const MATH_CONTENT_REGEX = /(?:\$\$|\\\[|\\\(|\\begin\{|\\frac|\\sqrt|\\sum|\\int|\\alpha|\\beta|\\gamma|_{|\\mathrm|\\left|\\right|\\pi|\\theta)/;
     const LATEX_IMAGE_ENDPOINT = 'https://latex.codecogs.com/png.image?';
-    function ensureKatexStyles() {
-        const appendStylesheet = () => {
-            if (document.head && !document.querySelector('link[data-xiaoya="katex-css"]')) {
-                const linkEl = document.createElement('link');
-                linkEl.rel = 'stylesheet';
-                linkEl.href = KATEX_CSS_URL;
-                linkEl.crossOrigin = 'anonymous';
-                linkEl.setAttribute('data-xiaoya', 'katex-css');
-                document.head.appendChild(linkEl);
-            }
-        };
-        if (document.readyState === 'loading') {
-            document.addEventListener('DOMContentLoaded', appendStylesheet, { once: true });
-        } else {
-            appendStylesheet();
-        }
-    }
     function applyMathRendering(rootElement) {
         if (!rootElement) return;
-        ensureKatexStyles();
         if (typeof window.renderMathInElement !== 'function') return;
         try {
             window.renderMathInElement(rootElement, KATEX_RENDER_OPTIONS);
@@ -375,7 +356,6 @@
             console.warn('[KaTeX] 渲染公式时出现问题:', error);
         }
     }
-    ensureKatexStyles();
     const defaultPrompts = {
         '1': `
             你是一个用于解答单选题的 AI 助手。请根据以下题目和选项，选择唯一的正确答案。
