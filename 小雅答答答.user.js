@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         小雅答答答
 // @license      MIT
-// @version      2.9.9
+// @version      2.9.9.1
 // @description  小雅平台学习助手 📖，智能整理归纳学习资料 📚，辅助完成练习 💪，并提供便捷的查阅和修改功能 📝！
 // @author       Yi
 // @match        https://*.ai-augmented.com/*
@@ -15458,7 +15458,8 @@
         },
         _setServiceTicket: function (ticket) {
             localStorage.setItem(this.SERVICE_TICKET_KEY, ticket);
-            localStorage.setItem(this.TICKET_EXPIRY_KEY, 'permanent');
+            const expiry = Date.now() + 7 * 24 * 60 * 60 * 1000;
+            localStorage.setItem(this.TICKET_EXPIRY_KEY, String(expiry));
         },
         _initiateLoginFlow: function () {
             return new Promise(async (resolve, reject) => {
@@ -16077,7 +16078,7 @@
                     binary: true
                 });
                 if (searchData.code !== 0 || searchData.data?.extJson?.abnormal_status === 'risk_req') {
-                    if (searchData.msg && (searchData.msg.includes('st fail') || searchData.msg.includes('过期'))) {
+                    if (searchData.msg && (searchData.msg.includes('st fail') || searchData.msg.includes('过期') || searchData.msg.includes('未登录'))) {
                         RuntimePatcher.blessedRemoveItem(localStorage, this.SERVICE_TICKET_KEY);
                         RuntimePatcher.blessedRemoveItem(localStorage, this.TICKET_EXPIRY_KEY);
                         showNotification('夸克授权已过期，请重试以重新登录。', { type: 'warning' });
