@@ -1,30 +1,3 @@
-// ==UserScript==
-// @name         小雅答答答
-// @license      MIT
-// @version      2.9.9.1
-// @description  小雅平台学习助手 📖，智能整理归纳学习资料 📚，辅助完成练习 💪，并提供便捷的查阅和修改功能 📝！
-// @author       Yi
-// @match        https://*.ai-augmented.com/*
-// @icon         https://www.ai-augmented.com/static/logo3.1dbbea8f.png
-// @grant        GM_xmlhttpRequest
-// @grant        GM_info
-// @run-at       document-start
-// @connect      api.open.uc.cn
-// @connect      page-souti.myquark.cn
-// @connect      api.qrserver.com
-// @connect      ai-augmented.com
-// @connect      g.alicdn.com
-// @require      https://cdn.jsdmirror.com/npm/katex@0.16.9/dist/katex.min.js
-// @require      https://cdn.jsdmirror.com/npm/docx@7.1.0/build/index.min.js
-// @require      https://cdn.jsdmirror.com/npm/file-saver@2.0.5/dist/FileSaver.min.js
-// @require      https://cdn.jsdmirror.com/npm/js-md5@0.8.3/src/md5.min.js
-// @require      https://cdn.jsdmirror.com/npm/crypto-js@4.2.0/crypto-js.js
-// @require      https://cdn.jsdmirror.com/npm/crypto-js@4.2.0/hmac-sha1.js
-// @require      https://cdn.jsdmirror.com/npm/dom-to-image-more@3.2.0/dist/dom-to-image-more.min.js
-// @require      https://cdn.jsdmirror.com/npm/katex@0.16.9/dist/contrib/auto-render.min.js
-// @homepageURL  https://xiaoya.zygame1314.site
-// ==/UserScript==
-
 (function () {
     'use strict';
     const RuntimePatcher = {
@@ -7522,17 +7495,13 @@
                     if (!targetElement) return { success: false, reason: "Target element for fill-in-blanks not found" };
                     try {
                         let cleanedContent = answer.trim();
-                        const jsonBlockPatterns = [
-                            /^```json\s*\n?([\s\S]+?)\n?\s*```$/,
-                            /^```\s*\n?([\s\S]+?)\n?\s*```$/,
-                            /^```([\s\S]+?)```$/
-                        ];
-                        for (const pattern of jsonBlockPatterns) {
-                            const match = cleanedContent.match(pattern);
-                            if (match) {
-                                cleanedContent = match[1].trim();
-                                break;
-                            }
+                        const codeBlockMatch = cleanedContent.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+                        if (codeBlockMatch) {
+                            cleanedContent = codeBlockMatch[1].trim();
+                        }
+                        const arrayMatch = cleanedContent.match(/\[[\s\S]*\]/);
+                        if (arrayMatch) {
+                            cleanedContent = arrayMatch[0];
                         }
                         const answers = JSON.parse(cleanedContent);
                         if (!Array.isArray(answers)) {
@@ -7603,17 +7572,9 @@
                     }
                 } else if (questionTypeNum === 10 && targetElement) {
                     let code = answer.trim();
-                    const codeBlockPatterns = [
-                        /^```[\w]*\n?([\s\S]*?)\n?```$/,
-                        /^```\n([\s\S]*?)\n```$/,
-                        /^```([\s\S]*?)```$/
-                    ];
-                    for (const pattern of codeBlockPatterns) {
-                        const match = code.match(pattern);
-                        if (match) {
-                            code = match[1].trim();
-                            break;
-                        }
+                    const codeBlockMatch = code.match(/```[\w]*\s*([\s\S]*?)\s*```/i);
+                    if (codeBlockMatch) {
+                        code = codeBlockMatch[1].trim();
                     }
                     targetElement.value = code;
                     if (question.program_setting) {
@@ -7634,17 +7595,13 @@
                 } else if (questionTypeNum === 12 && targetElement) {
                     try {
                         let cleanedContent = answer.trim();
-                        const jsonBlockPatterns = [
-                            /^```json\s*\n?([\s\S]+?)\n?\s*```$/,
-                            /^```\s*\n?([\s\S]+?)\n?\s*```$/,
-                            /^```([\s\S]+?)```$/
-                        ];
-                        for (const pattern of jsonBlockPatterns) {
-                            const match = cleanedContent.match(pattern);
-                            if (match) {
-                                cleanedContent = match[1].trim();
-                                break;
-                            }
+                        const codeBlockMatch = cleanedContent.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+                        if (codeBlockMatch) {
+                            cleanedContent = codeBlockMatch[1].trim();
+                        }
+                        const arrayMatch = cleanedContent.match(/\[[\s\S]*\]/);
+                        if (arrayMatch) {
+                            cleanedContent = arrayMatch[0];
                         }
                         const orderedLetters = JSON.parse(cleanedContent);
                         if (!Array.isArray(orderedLetters)) {
@@ -7685,17 +7642,13 @@
                 } else if (questionTypeNum === 13 && targetElement) {
                     try {
                         let cleanedContent = answer.trim();
-                        const jsonBlockPatterns = [
-                            /^```json\s*\n?([\s\S]+?)\n?\s*```$/,
-                            /^```\s*\n?([\s\S]+?)\n?\s*```$/,
-                            /^```([\s\S]+?)```$/
-                        ];
-                        for (const pattern of jsonBlockPatterns) {
-                            const match = cleanedContent.match(pattern);
-                            if (match) {
-                                cleanedContent = match[1].trim();
-                                break;
-                            }
+                        const codeBlockMatch = cleanedContent.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+                        if (codeBlockMatch) {
+                            cleanedContent = codeBlockMatch[1].trim();
+                        }
+                        const jsonMatch = cleanedContent.match(/(\{[\s\S]*\}|\[[\s\S]*\])/);
+                        if (jsonMatch) {
+                            cleanedContent = jsonMatch[0];
                         }
                         const matches = JSON.parse(cleanedContent);
                         const leftItems = question.answer_items.filter(item => !item.is_target_opt);
@@ -12913,17 +12866,48 @@
                 });
             };
             const updateSelectedDisplay = (value) => {
+                let logo = null;
+                let capabilities = [];
+                let text = value;
+                let domain = null;
                 const selectedOptionData = currentOptions.find(opt => opt.value === value);
                 if (selectedOptionData) {
-                    const domain = selectedOptionData.domain;
-                    selectedContent.innerHTML = `
-                        ${domain ? `<img src="https://favicon.im/${domain}" alt="">` : ''}
-                        <span>${selectedOptionData.text}</span>
-                    `;
+                    text = selectedOptionData.text;
+                    logo = selectedOptionData.logo;
+                    capabilities = selectedOptionData.capabilities || [];
+                    domain = selectedOptionData.domain;
                 } else if (value) {
-                    selectedContent.innerHTML = `<span>${value}</span>`;
+                    if (typeof getModelMetadata === 'function') {
+                        const metadata = getModelMetadata(value, modelsDevCache);
+                        logo = metadata.logo;
+                        capabilities = metadata.capabilities;
+                    }
+                }
+                if (value) {
+                    let iconHtml = '';
+                    if (logo) {
+                        iconHtml = `<img src="${logo}" alt="">`;
+                    } else if (domain) {
+                        iconHtml = `<img src="https://favicon.im/${domain}" alt="">`;
+                    }
+                    let capabilitiesHtml = '';
+                    if (capabilities && capabilities.length > 0) {
+                        capabilitiesHtml = `<div class="capabilities-badges" style="margin-left: auto;">${capabilities.map(c => `<span class="capability-badge ${c.type}">${c.label}</span>`).join('')}</div>`;
+                    }
+                    selectedContent.innerHTML = `
+                        <div style="display: flex; gap: 10px; align-items: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+                            ${iconHtml}
+                            <span style="overflow: hidden; text-overflow: ellipsis;">${text}</span>
+                        </div>
+                        ${capabilitiesHtml}
+                    `;
+                    selectedContent.style.display = 'flex';
+                    selectedContent.style.alignItems = 'center';
+                    selectedContent.style.justifyContent = 'space-between';
+                    selectedContent.style.width = '100%';
                 } else {
                     selectedContent.innerHTML = '<span>请选择...</span>';
+                    selectedContent.style.display = 'block';
                 }
             };
             const setCurrentValue = (newValue, { triggerChange = true } = {}) => {
@@ -13024,11 +13008,25 @@
                     if (optionData.title) {
                         optionEl.title = optionData.title;
                     }
-                    optionEl.dataset.value = optionData.value;
                     const domain = optionData.domain;
+                    const logo = optionData.logo;
+                    const capabilities = optionData.capabilities || [];
+                    let iconHtml = '';
+                    if (logo) {
+                        iconHtml = `<img src="${logo}" alt="">`;
+                    } else if (domain) {
+                        iconHtml = `<img src="https://favicon.im/${domain}" alt="">`;
+                    }
+                    let capabilitiesHtml = '';
+                    if (capabilities.length > 0) {
+                        capabilitiesHtml = `<div class="capabilities-badges">${capabilities.map(c => `<span class="capability-badge ${c.type}">${c.label}</span>`).join('')}</div>`;
+                    }
                     optionEl.innerHTML = `
-                        ${domain ? `<img src="https://favicon.im/${domain}" alt="">` : ''}
-                        <span>${optionData.text}</span>
+                        <div class="option-main">
+                            ${iconHtml}
+                            <span>${optionData.text}</span>
+                        </div>
+                        ${capabilitiesHtml}
                     `;
                     if (optionData.value === currentValue) {
                         optionEl.classList.add('selected');
@@ -13447,11 +13445,16 @@
                 }
                 .custom-select-options .option {
                     display: flex;
-                    align-items: center;
-                    gap: 10px;
-                    padding: 12px 16px;
+                    flex-direction: column;
+                    align-items: flex-start;
+                    gap: 6px;
+                    padding: 10px 16px;
                     cursor: pointer;
                     transition: background-color 0.2s;
+                    border-bottom: 1px solid #f3f4f6;
+                }
+                .custom-select-options .option:last-child {
+                    border-bottom: none;
                 }
                 .custom-select-options .option:hover {
                     background-color: #f3f4f6;
@@ -13461,11 +13464,51 @@
                     color: #4f46e5;
                     font-weight: 600;
                 }
+                .custom-select-options .option .option-main {
+                    display: flex;
+                    align-items: center;
+                    gap: 10px;
+                    width: 100%;
+                }
                 .custom-select-options .option img {
                     width: 24px;
                     height: 24px;
                     border-radius: 4px;
                     object-fit: contain;
+                }
+                .capabilities-badges {
+                    display: flex;
+                    gap: 6px;
+                    margin-left: 34px;
+                    flex-wrap: wrap;
+                }
+                .capability-badge {
+                    font-size: 10px;
+                    padding: 2px 6px;
+                    border-radius: 4px;
+                    font-weight: 600;
+                    text-transform: uppercase;
+                    border: 1px solid rgba(0,0,0,0.05);
+                }
+                .capability-badge.vision {
+                    background-color: #d1fae5;
+                    color: #047857;
+                }
+                .capability-badge.tool {
+                    background-color: #e0f2fe;
+                    color: #0369a1;
+                }
+                .capability-badge.reasoning {
+                    background-color: #fce7f3;
+                    color: #be185d;
+                }
+                .capability-badge.text {
+                    background-color: #f3f4f6;
+                    color: #4b5563;
+                }
+                .capability-badge.media {
+                    background-color: #e0e7ff;
+                    color: #4338ca;
                 }
             </style>
         `;
@@ -14011,6 +14054,28 @@
                     updateFieldVisibility();
                     updateUrlPreview();
                 };
+                if (field.id === 'ai-model' || field.id === 'vision-model') {
+                    const initialModelId = field.value;
+                    if (initialModelId) {
+                        const cachedModelsDev = modelsDevCache;
+                        const { logo, capabilities } = getModelMetadata(initialModelId, cachedModelsDev);
+                        if (logo || capabilities.length > 0) {
+                            if (!field.options) field.options = [];
+                            const existingOpt = field.options.find(o => o.value === initialModelId);
+                            if (existingOpt) {
+                                existingOpt.logo = logo;
+                                existingOpt.capabilities = capabilities;
+                            } else {
+                                field.options.push({
+                                    value: initialModelId,
+                                    text: initialModelId,
+                                    logo: logo,
+                                    capabilities: capabilities
+                                });
+                            }
+                        }
+                    }
+                }
                 input = createCustomSelect(field, field.value, onValueChange);
                 group.appendChild(input);
                 if (field.id === 'audio-processing-mode') {
@@ -14059,13 +14124,11 @@
                 input.style.verticalAlign = 'middle';
                 const checkboxLabel = document.createElement('span');
                 if (field.id === 'ai-vision-enabled') {
-                    checkboxLabel.innerHTML = '勾选后，AI 将能够识别题目或选项中的图片内容。<strong style="color: #4f46e5;">请确保模型支持。</strong>';
+                    checkboxLabel.innerHTML = '勾选后，AI 将能够识别题目或选项中的图片内容。<strong>请确保模型支持<span style="color: #047857;">视觉</span>。</strong>';
                 } else if (field.id === 'gemini-thinking-enabled') {
                     checkboxLabel.innerHTML = '勾选后，将实时输出思考总结。<strong style="color: #4f46e5;">可用于 2.5 系列模型。</strong>';
                 } else if (field.id === 'gemini-analyze-video-frames-enabled') {
-                    checkboxLabel.innerHTML = '勾选后，AI 将分析视频的关键画面内容，提升理解效果。<strong style="color: #c026d3;">消耗Token较多，请确保模型支持。</strong>';
-                } else if (field.id === 'gemini-video-understanding-enabled') {
-                    checkboxLabel.innerHTML = '直接将视频内容提交给AI进行分析，而非仅转录音轨。<strong style="color: #c026d3;">消耗Token较多，请确保模型支持。</strong>';
+                    checkboxLabel.innerHTML = '勾选后，AI 将分析视频的关键画面内容，提升理解效果。<strong style="color: #c026d3;">消耗Token较多，请确保模型支持<span style="color: #4338ca">媒体</span>。</strong>';
                 } else if (field.id === 'stt-enabled') {
                     checkboxLabel.innerHTML = '勾选后，启用独立的语音识别功能。';
                 } else if (field.id === 'stt-video-enabled') {
@@ -14844,6 +14907,97 @@
                 return Promise.resolve([]);
             }
         }
+        function getModelMetadata(modelId, modelsDevData) {
+            let logo = null;
+            let capabilities = [];
+            let providerId = null;
+            const lowerM = modelId.toLowerCase();
+            if (lowerM.includes('claude')) providerId = 'anthropic';
+            else if (lowerM.includes('gemini')) providerId = 'google';
+            else if (lowerM.includes('gpt') || lowerM.includes('o1') || lowerM.includes('o3')) providerId = 'openai';
+            else if (lowerM.includes('mistral')) providerId = 'mistral';
+            else if (lowerM.includes('deepseek')) providerId = 'deepseek';
+            else if (lowerM.includes('qwen')) providerId = 'alibaba';
+            else if (lowerM.includes('yi')) providerId = '01-ai';
+            else if (lowerM.includes('glm')) providerId = 'zhipu';
+            else if (lowerM.includes('llama')) providerId = 'meta';
+            else if (lowerM.includes('hunyuan')) providerId = 'tencent';
+            else if (lowerM.includes('minimax')) providerId = 'minimax';
+            else if (lowerM.includes('baichuan')) providerId = 'baichuan';
+            else if (lowerM.includes('moonshot') || lowerM.includes('kimi')) providerId = 'moonshot';
+            let hasVision = false;
+            let hasTool = false;
+            let hasReasoning = false;
+            let hasText = false;
+            let hasMedia = false;
+            let visionVotes = 0;
+            let toolVotes = 0;
+            let reasoningVotes = 0;
+            let textVotes = 0;
+            let mediaVotes = 0;
+            let totalMatches = 0;
+            if (modelsDevData) {
+                for (const providerKey in modelsDevData) {
+                    const providerData = modelsDevData[providerKey];
+                    if (providerData && providerData.models) {
+                        let matchedModelInfo = null;
+                        if (providerData.models[modelId]) {
+                            matchedModelInfo = providerData.models[modelId];
+                        }
+                        else {
+                            for (const dbModelId in providerData.models) {
+                                const lowerDbId = dbModelId.toLowerCase();
+                                const userLeaf = lowerM.split('/').pop().split(':').pop();
+                                const dbLeaf = lowerDbId.split('/').pop().split(':').pop();
+                                const isExactMatch = lowerM === lowerDbId;
+                                const isSuffixMatch = lowerM.endsWith('/' + lowerDbId) || lowerM.endsWith(':' + lowerDbId);
+                                const isLeafStartMatch = dbLeaf.length >= 2 && userLeaf.startsWith(dbLeaf);
+                                if (isExactMatch || isSuffixMatch || isLeafStartMatch) {
+                                    matchedModelInfo = providerData.models[dbModelId];
+                                    break;
+                                }
+                            }
+                        }
+                        if (matchedModelInfo) {
+                            totalMatches++;
+                            if (!providerId) {
+                                providerId = providerKey;
+                            }
+                            if (matchedModelInfo.modalities?.input?.includes('image')) visionVotes++;
+                            if (matchedModelInfo.modalities?.input?.includes('text')) textVotes++;
+                            if (matchedModelInfo.modalities?.input?.includes('audio') || matchedModelInfo.modalities?.input?.includes('video')) mediaVotes++;
+                            if (matchedModelInfo.tool_call) toolVotes++;
+                            if (matchedModelInfo.reasoning) reasoningVotes++;
+                        }
+                    }
+                }
+            }
+            if (totalMatches > 0) {
+                const threshold = totalMatches / 2;
+                hasVision = visionVotes >= threshold;
+                hasText = textVotes >= threshold;
+                hasMedia = mediaVotes >= threshold;
+                hasTool = toolVotes >= threshold;
+                hasReasoning = reasoningVotes >= threshold;
+            }
+            if (!hasVision && (lowerM.includes('vision') || lowerM.includes('vl') || /\d+(\.\d+)?v\b/.test(lowerM))) {
+                hasVision = true;
+            }
+            if (!hasReasoning && (lowerM.includes('thinking') || lowerM.includes('reasoner') || lowerM.includes('deepseek-r1') || lowerM.includes('o1'))) {
+                hasReasoning = true;
+            }
+            if (providerId) {
+                logo = `https://models.dev/logos/${providerId}.svg`;
+            } else {
+                logo = 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJub25lIiBzdHJva2U9IiM5Q0EzQUYiIHN0cm9rZS13aWR0aD0iMiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIj48cmVjdCB4PSI0IiB5PSI0IiB3aWR0aD0iMTYiIGhlaWdodD0iMTYiIHJ4PSIyIiByeT0iMiI+PC9yZWN0PjxyZWN0IHg9IjkiIHk9IjkiIHdpZHRoPSI2IiBoZWlnaHQ9IjYiPjwvcmVjdD48bGluZSB4MT0iOSIgeTE9IjEiIHgyPSI5IiB5Mj0iNCI+PC9saW5lPjxsaW5lIHgxPSIxNSIgeTE9IjEiIHgyPSIxNSIgeTI9IjQiPjwvbGluZT48bGluZSB4MT0iOSIgeTE9IjIwIiB4Mj0iOSIgeTI9IjIzIj48L2xpbmU+PGxpbmUgeDE9IjE1IiB5MT0iMjAiIHgyPSIxNSIgeTI9IjIzIj48L2xpbmU+PGxpbmUgeDE9IjIwIiB5MT0iOSIgeDI9IjIzIiB5Mj0iOSI+PC9saW5lPjxsaW5lIHgxPSIyMCIgeTE9IjE0IiB4Mj0iMjMiIHkyPSIxNCI+PC9saW5lPjxsaW5lIHgxPSIxIiB5MT0iOSIgeDI9IjQiIHkyPSI5Ij48L2xpbmU+PGxpbmUgeDE9IjEiIHkxPSIxNCIgeDI9IjQiIHkyPSIxNCI+PC9saW5lPjwvc3ZnPg==';
+            }
+            if (hasText) capabilities.push({ type: 'text', label: '文本' });
+            if (hasVision) capabilities.push({ type: 'vision', label: '视觉' });
+            if (hasMedia) capabilities.push({ type: 'media', label: '媒体' });
+            if (hasTool) capabilities.push({ type: 'tool', label: '工具' });
+            if (hasReasoning) capabilities.push({ type: 'reasoning', label: '推理' });
+            return { logo, capabilities };
+        }
         async function fetchModelsAndPopulateDropdown(modelInputId, selectWrapper) {
             const isVision = modelInputId.startsWith('vision-');
             const provider = isVision
@@ -14869,16 +15023,27 @@
             const originalButtonText = fetchButton.innerHTML;
             fetchButton.innerHTML = `⏳ 获取中...`;
             try {
-                const models = await fetchAvailableModels(provider, endpoint, apiKey, azureApiVersion);
+                const [models, modelsDevData] = await Promise.all([
+                    fetchAvailableModels(provider, endpoint, apiKey, azureApiVersion),
+                    fetchModelsDevApi()
+                ]);
                 if (models && models.length > 0) {
-                    const newOptions = models.map(m => ({ value: m, text: m }));
+                    const newOptions = models.map(m => {
+                        const { logo, capabilities } = getModelMetadata(m, modelsDevData);
+                        return {
+                            value: m,
+                            text: m,
+                            logo: logo,
+                            capabilities: capabilities
+                        };
+                    });
                     selectWrapper.setOptions(newOptions, selectWrapper.getValue());
                     showNotification(`成功为 ${provider} 获取 ${models.length} 个模型。`, { type: 'success' });
                 } else if (models) {
                     showNotification(`未能为 ${provider} 获取到模型列表。`, { type: 'warning' });
                 }
             } catch (error) {
-                console.error("Error in fetchModelsAndPopulateDropdown:", error);
+                console.error("获取模型列表并填充下拉框时出错：", error);
             } finally {
                 fetchButton.disabled = false;
                 fetchButton.innerHTML = originalButtonText;
@@ -15449,11 +15614,13 @@
         },
         _getServiceTicket: function () {
             const ticket = localStorage.getItem(this.SERVICE_TICKET_KEY);
-            if (ticket) {
+            const expiry = localStorage.getItem(this.TICKET_EXPIRY_KEY);
+            if (ticket && expiry && Date.now() < parseInt(expiry)) {
                 return ticket;
             }
             RuntimePatcher.blessedRemoveItem(localStorage, this.SERVICE_TICKET_KEY);
             RuntimePatcher.blessedRemoveItem(localStorage, this.TICKET_EXPIRY_KEY);
+            showNotification('夸克授权已过期，请重试以重新登录。', { type: 'warning' });
             return null;
         },
         _setServiceTicket: function (ticket) {
@@ -16158,6 +16325,67 @@
             }
         }
     };
+    let modelsDevCache = null;
+    async function fetchModelsDevApi() {
+        if (modelsDevCache) return modelsDevCache;
+        const CACHE_KEY = 'xiaoya_models_dev_cache';
+        const CACHE_EXPIRY = 24 * 60 * 60 * 1000;
+        try {
+            const cached = localStorage.getItem(CACHE_KEY);
+            if (cached) {
+                const { data, timestamp } = JSON.parse(cached);
+                if (Date.now() - timestamp < CACHE_EXPIRY) {
+                    modelsDevCache = data;
+                    return data;
+                }
+            }
+        } catch (e) {
+            console.warn('读取 models.dev 缓存失败', e);
+        }
+        return new Promise((resolve) => {
+            if (typeof GM_xmlhttpRequest === 'undefined') {
+                console.warn('GM_xmlhttpRequest 未定义，无法获取 models.dev API。');
+                resolve(null);
+                return;
+            }
+            GM_xmlhttpRequest({
+                method: "GET",
+                url: "https://models.dev/api.json",
+                onload: function (response) {
+                    if (response.status >= 200 && response.status < 300) {
+                        try {
+                            const data = JSON.parse(response.responseText);
+                            modelsDevCache = data;
+                            try {
+                                localStorage.setItem(CACHE_KEY, JSON.stringify({
+                                    data: data,
+                                    timestamp: Date.now()
+                                }));
+                            } catch (e) {
+                                console.warn('写入 models.dev 缓存失败', e);
+                            }
+                            resolve(data);
+                        } catch (e) {
+                            console.warn('解析 models.dev API 响应失败', e);
+                            resolve(null);
+                        }
+                    } else {
+                        console.warn('获取 models.dev API 失败', response.statusText);
+                        resolve(null);
+                    }
+                },
+                onerror: function (error) {
+                    console.warn('网络错误，获取 models.dev API 失败', error);
+                    resolve(null);
+                },
+                ontimeout: function () {
+                    console.warn('获取 models.dev API 超时');
+                    resolve(null);
+                }
+            });
+        });
+    }
+    fetchModelsDevApi();
     const updateChecker = {
         API_URL: 'https://api.zygame1314.site/check/scripts',
         SCRIPT_NAME: '小雅答答答',
