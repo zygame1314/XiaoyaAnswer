@@ -1,3 +1,31 @@
+// ==UserScript==
+// @name         小雅答答答
+// @license      MIT
+// @version      2.9.10
+// @description  小雅平台学习助手 📖，智能整理归纳学习资料 📚，辅助完成练习 💪，并提供便捷的查阅和修改功能 📝！
+// @author       Yi
+// @match        https://*.ai-augmented.com/*
+// @icon         https://www.ai-augmented.com/static/logo3.1dbbea8f.png
+// @grant        GM_xmlhttpRequest
+// @grant        GM_info
+// @run-at       document-start
+// @connect      api.open.uc.cn
+// @connect      page-souti.myquark.cn
+// @connect      api.qrserver.com
+// @connect      ai-augmented.com
+// @connect      g.alicdn.com
+// @connect      models.dev
+// @require      https://cdn.jsdmirror.com/npm/katex@0.16.9/dist/katex.min.js
+// @require      https://cdn.jsdmirror.com/npm/docx@7.1.0/build/index.min.js
+// @require      https://cdn.jsdmirror.com/npm/file-saver@2.0.5/dist/FileSaver.min.js
+// @require      https://cdn.jsdmirror.com/npm/js-md5@0.8.3/src/md5.min.js
+// @require      https://cdn.jsdmirror.com/npm/crypto-js@4.2.0/crypto-js.js
+// @require      https://cdn.jsdmirror.com/npm/crypto-js@4.2.0/hmac-sha1.js
+// @require      https://cdn.jsdmirror.com/npm/dom-to-image-more@3.2.0/dist/dom-to-image-more.min.js
+// @require      https://cdn.jsdmirror.com/npm/katex@0.16.9/dist/contrib/auto-render.min.js
+// @homepageURL  https://xiaoya.zygame1314.site
+// ==/UserScript==
+
 (function () {
     'use strict';
     const RuntimePatcher = {
