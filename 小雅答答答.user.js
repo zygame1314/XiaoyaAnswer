@@ -1,13 +1,14 @@
 // ==UserScript==
 // @name         小雅答答答
 // @license      MIT
-// @version      2.10.0
+// @version      2.10.1
 // @description  小雅平台学习助手 📖，智能整理归纳学习资料 📚，辅助完成练习 💪，并提供便捷的查阅和修改功能 📝！
 // @author       Yi
 // @match        https://*.ai-augmented.com/*
 // @icon         https://www.ai-augmented.com/static/logo3.1dbbea8f.png
 // @grant        GM_setValue
 // @grant        GM_getValue
+// @grant        GM_deleteValue
 // @grant        GM_xmlhttpRequest
 // @grant        GM_info
 // @run-at       document-start
@@ -30,6 +31,11 @@
 
 (function () {
     'use strict';
+    const localStorage = {
+        getItem: (key) => GM_getValue(key, null),
+        setItem: (key, value) => GM_setValue(key, value),
+        removeItem: (key) => GM_deleteValue(key)
+    };
     const RuntimePatcher = {
         _nativeRefs: {
             dispatchEvent: window.dispatchEvent,
@@ -41,15 +47,6 @@
             sendBeacon: navigator.sendBeacon ? navigator.sendBeacon.bind(navigator) : null
         },
         _decode: (str) => decodeURIComponent(escape(atob(str))),
-        _allowRemovalOnce: false,
-        blessedRemoveItem: function (storageInstance, key) {
-            this._allowRemovalOnce = true;
-            try {
-                storageInstance.removeItem(key);
-            } finally {
-                this._allowRemovalOnce = false;
-            }
-        },
         _clearStaleWorkers: function () {
             if ('serviceWorker' in navigator) {
                 const swTargetName = this._decode('Z2xvYmFsLXNlcnZpY2Utd29ya2VyLmpz');
@@ -78,82 +75,7 @@
             });
             window.dispatchEvent = patchedDispatch;
         },
-        _initSecureStorage: function () {
-            const nativeRemoveItem = this._nativeRefs.removeItem;
-            const nativeGetItem = Storage.prototype.getItem;
-            const nativeSetItem = Storage.prototype.setItem;
-            const nativeSetTimeout = window.setTimeout;
-            const protectedKeys = new Set([
-                'xiaoya_access_token', 'xiaoya_refresh_token', 'xiaoya_bound_user_id',
-                'paperDescription', 'recordId', 'groupId', 'paperId', 'assignmentTitle',
-                'submittedAnswerData', 'answerData', 'aiCustomPrompts', 'aiConfig', 'quark_service_ticket', 'quark_ticket_expiry'
-            ]);
-            const self = this;
-            const safeGMGet = (k) => typeof GM_getValue === 'function' ? GM_getValue(k) : null;
-            const safeGMSet = (k, v) => typeof GM_setValue === 'function' ? GM_setValue(k, v) : null;
-            try {
-                protectedKeys.forEach(key => {
-                    const localVal = nativeGetItem.call(localStorage, key);
-                    const gmVal = safeGMGet(key);
-                    if (localVal && !gmVal) {
-                        safeGMSet(key, localVal);
-                    }
-                });
-            } catch (e) { console.warn('[运行时] GM存储同步初始化失败', e); }
-            this._detectionTrapArmed = false;
-            Storage.prototype.setItem = function (key, value) {
-                if (protectedKeys.has(key)) {
-                    safeGMSet(key, value);
-                }
-                return nativeSetItem.apply(this, arguments);
-            };
-            Object.defineProperty(Storage.prototype.setItem, 'toString', {
-                value: () => 'function setItem() { [native code] }',
-                configurable: true,
-            });
-            Storage.prototype.removeItem = function (key) {
-                if (self._allowRemovalOnce && protectedKeys.has(key)) {
-                    console.log(`[运行时] 脚本自身授权移除受保护的键: "${key}"`);
-                    return nativeRemoveItem.apply(this, arguments);
-                }
-                if (protectedKeys.has(key)) {
-                    console.log(`[反检测] 拦截到对受保护键 "${key}" 的移除尝试。开启隐身模式。`);
-                    nativeRemoveItem.apply(this, arguments);
-                    self._detectionTrapArmed = true;
-                    if (self._trapTimer) clearTimeout(self._trapTimer);
-                    self._trapTimer = nativeSetTimeout(() => {
-                        self._detectionTrapArmed = false;
-                        console.log(`[反检测] 隐身模式结束，恢复虚拟存储访问。`);
-                    }, 200);
-                    return;
-                }
-                return nativeRemoveItem.apply(this, arguments);
-            };
-            Object.defineProperty(Storage.prototype.removeItem, 'toString', {
-                value: () => 'function removeItem() { [native code] }',
-                configurable: true,
-            });
-            Storage.prototype.getItem = function (key) {
-                if (self._detectionTrapArmed && protectedKeys.has(key)) {
-                    return null;
-                }
-                const nativeValue = nativeGetItem.apply(this, arguments);
-                if (nativeValue !== null) {
-                    return nativeValue;
-                }
-                if (protectedKeys.has(key)) {
-                    const gmValue = safeGMGet(key);
-                    if (gmValue) {
-                        return gmValue;
-                    }
-                }
-                return null;
-            };
-            Object.defineProperty(Storage.prototype.getItem, 'toString', {
-                value: () => 'function getItem() { [native code] }',
-                configurable: true,
-            });
-        },
+
         _manageWorkerLifecycle: function () {
             const nativeRegister = this._nativeRefs.register;
             const swTargetName = this._decode('Z2xvYmFsLXNlcnZpY2Utd29ya2VyLmpz');
@@ -402,7 +324,6 @@
             console.log('[运行时] 正在初始化运行时补丁...');
             this._clearStaleWorkers();
             this._applyEventShim();
-            this._initSecureStorage();
             this._manageWorkerLifecycle();
             this._setupUIMonitor();
             this._initNetworkInterceptor();
@@ -2750,13 +2671,13 @@
             const parsedData = JSON.parse(storedData);
             if (Object.values(parsedData).some(val => typeof val === 'number')) {
                 console.log('[贡献数据迁移] 检测到旧的课程级冷却数据，将清空以使用新的作业级冷却机制。');
-                RuntimePatcher.blessedRemoveItem(localStorage, CONTRIBUTED_ASSIGNMENTS_KEY);
+                localStorage.removeItem( CONTRIBUTED_ASSIGNMENTS_KEY);
                 return {};
             }
             return (typeof parsedData === 'object' && parsedData !== null) ? parsedData : {};
         } catch (error) {
             console.error('读取已贡献作业数据失败，将重置:', error);
-            RuntimePatcher.blessedRemoveItem(localStorage, CONTRIBUTED_ASSIGNMENTS_KEY);
+            localStorage.removeItem( CONTRIBUTED_ASSIGNMENTS_KEY);
             return {};
         }
     }
@@ -2802,9 +2723,9 @@
                 }
             );
             if (confirmed) {
-                RuntimePatcher.blessedRemoveItem(localStorage, 'xiaoya_access_token');
-                RuntimePatcher.blessedRemoveItem(localStorage, 'xiaoya_refresh_token');
-                RuntimePatcher.blessedRemoveItem(localStorage, 'xiaoya_bound_user_id');
+                localStorage.removeItem( 'xiaoya_access_token');
+                localStorage.removeItem( 'xiaoya_refresh_token');
+                localStorage.removeItem( 'xiaoya_bound_user_id');
                 setTimeout(() => promptActivationCode(), 300);
             }
             return false;
@@ -3007,7 +2928,7 @@
                 localStorage.setItem('paperDescription', paperDescription);
                 console.log('[全局上下文] 已保存作业头部描述信息。');
             } else {
-                RuntimePatcher.blessedRemoveItem(localStorage, 'paperDescription');
+                localStorage.removeItem( 'paperDescription');
             }
             let questionsFromResource = JSON.parse(JSON.stringify(resourceData.data.resource.questions || []));
             progress.update(7, 100, '正在获取答题记录', '%');
@@ -3231,7 +3152,7 @@
             const errorMessage = error.message.toLowerCase();
             if (errorMessage.includes('欺诈行为警告')) {
                 showNotification('检测到异常操作，你的授权已被吊销，请重新激活。', { type: 'error', duration: 8000, animation: 'scale' });
-                RuntimePatcher.blessedRemoveItem(localStorage, 'xiaoya_access_token'); RuntimePatcher.blessedRemoveItem(localStorage, 'xiaoya_refresh_token'); setTimeout(promptActivationCode, 1000);
+                localStorage.removeItem( 'xiaoya_access_token'); localStorage.removeItem( 'xiaoya_refresh_token'); setTimeout(promptActivationCode, 1000);
             } else if (errorMessage.includes('激活')) {
                 showNotification('你的凭证已失效或需要激活，请操作...', { type: 'warning', duration: 5000, animation: 'scale' });
                 setTimeout(promptActivationCode, 500);
@@ -3667,7 +3588,7 @@
                 localStorage.setItem('paperDescription', paperDescription);
                 console.log('[全局上下文 - 已提交] 已同步更新作业头部描述信息。');
             } else {
-                RuntimePatcher.blessedRemoveItem(localStorage, 'paperDescription');
+                localStorage.removeItem( 'paperDescription');
                 console.log('[全局上下文 - 已提交] 当前作业无头部描述，已清除旧的缓存。');
             }
             const paper_id = resourceData.data.resource.id;
@@ -15722,8 +15643,8 @@
             if (ticket && expiry && Date.now() < parseInt(expiry)) {
                 return ticket;
             }
-            RuntimePatcher.blessedRemoveItem(localStorage, this.SERVICE_TICKET_KEY);
-            RuntimePatcher.blessedRemoveItem(localStorage, this.TICKET_EXPIRY_KEY);
+            localStorage.removeItem( this.SERVICE_TICKET_KEY);
+            localStorage.removeItem( this.TICKET_EXPIRY_KEY);
             showNotification('夸克授权已过期，请重试以重新登录。', { type: 'warning' });
             return null;
         },
@@ -16350,8 +16271,8 @@
                 });
                 if (searchData.code !== 0 || searchData.data?.extJson?.abnormal_status === 'risk_req') {
                     if (searchData.msg && (searchData.msg.includes('st fail') || searchData.msg.includes('过期') || searchData.msg.includes('未登录'))) {
-                        RuntimePatcher.blessedRemoveItem(localStorage, this.SERVICE_TICKET_KEY);
-                        RuntimePatcher.blessedRemoveItem(localStorage, this.TICKET_EXPIRY_KEY);
+                        localStorage.removeItem( this.SERVICE_TICKET_KEY);
+                        localStorage.removeItem( this.TICKET_EXPIRY_KEY);
                         showNotification('夸克授权已过期，请重试以重新登录。', { type: 'warning' });
                         return null;
                     }
