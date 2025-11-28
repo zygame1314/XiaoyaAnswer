@@ -1,11 +1,13 @@
 // ==UserScript==
 // @name         小雅答答答
 // @license      MIT
-// @version      2.9.10
+// @version      2.10.0
 // @description  小雅平台学习助手 📖，智能整理归纳学习资料 📚，辅助完成练习 💪，并提供便捷的查阅和修改功能 📝！
 // @author       Yi
 // @match        https://*.ai-augmented.com/*
 // @icon         https://www.ai-augmented.com/static/logo3.1dbbea8f.png
+// @grant        GM_setValue
+// @grant        GM_getValue
 // @grant        GM_xmlhttpRequest
 // @grant        GM_info
 // @run-at       document-start
@@ -78,36 +80,77 @@
         },
         _initSecureStorage: function () {
             const nativeRemoveItem = this._nativeRefs.removeItem;
+            const nativeGetItem = Storage.prototype.getItem;
+            const nativeSetItem = Storage.prototype.setItem;
+            const nativeSetTimeout = window.setTimeout;
             const protectedKeys = new Set([
                 'xiaoya_access_token', 'xiaoya_refresh_token', 'xiaoya_bound_user_id',
                 'paperDescription', 'recordId', 'groupId', 'paperId', 'assignmentTitle',
                 'submittedAnswerData', 'answerData', 'aiCustomPrompts', 'aiConfig', 'quark_service_ticket', 'quark_ticket_expiry'
             ]);
             const self = this;
+            const safeGMGet = (k) => typeof GM_getValue === 'function' ? GM_getValue(k) : null;
+            const safeGMSet = (k, v) => typeof GM_setValue === 'function' ? GM_setValue(k, v) : null;
+            try {
+                protectedKeys.forEach(key => {
+                    const localVal = nativeGetItem.call(localStorage, key);
+                    const gmVal = safeGMGet(key);
+                    if (localVal && !gmVal) {
+                        safeGMSet(key, localVal);
+                    }
+                });
+            } catch (e) { console.warn('[运行时] GM存储同步初始化失败', e); }
+            this._detectionTrapArmed = false;
+            Storage.prototype.setItem = function (key, value) {
+                if (protectedKeys.has(key)) {
+                    safeGMSet(key, value);
+                }
+                return nativeSetItem.apply(this, arguments);
+            };
+            Object.defineProperty(Storage.prototype.setItem, 'toString', {
+                value: () => 'function setItem() { [native code] }',
+                configurable: true,
+            });
             Storage.prototype.removeItem = function (key) {
                 if (self._allowRemovalOnce && protectedKeys.has(key)) {
                     console.log(`[运行时] 脚本自身授权移除受保护的键: "${key}"`);
                     return nativeRemoveItem.apply(this, arguments);
                 }
                 if (protectedKeys.has(key)) {
-                    console.log(`[反检测] 检测到对受保护键 "${key}" 的移除尝试，执行反检测策略。`);
-                    const value = this.getItem(key);
+                    console.log(`[反检测] 拦截到对受保护键 "${key}" 的移除尝试。开启隐身模式。`);
                     nativeRemoveItem.apply(this, arguments);
-                    console.log(`[反检测] 已临时移除键 "${key}" 以绕过同步检测。`);
-                    if (value) {
-                        setTimeout(() => {
-                            this.setItem(key, value);
-                            console.log(`[反检测] 已恢复键 "${key}"。`);
-                        }, 0);
-                    } else {
-                        console.log(`[反检测] 键 "${key}" 原本就为空，无需恢复。`);
-                    }
+                    self._detectionTrapArmed = true;
+                    if (self._trapTimer) clearTimeout(self._trapTimer);
+                    self._trapTimer = nativeSetTimeout(() => {
+                        self._detectionTrapArmed = false;
+                        console.log(`[反检测] 隐身模式结束，恢复虚拟存储访问。`);
+                    }, 200);
                     return;
                 }
                 return nativeRemoveItem.apply(this, arguments);
             };
             Object.defineProperty(Storage.prototype.removeItem, 'toString', {
                 value: () => 'function removeItem() { [native code] }',
+                configurable: true,
+            });
+            Storage.prototype.getItem = function (key) {
+                if (self._detectionTrapArmed && protectedKeys.has(key)) {
+                    return null;
+                }
+                const nativeValue = nativeGetItem.apply(this, arguments);
+                if (nativeValue !== null) {
+                    return nativeValue;
+                }
+                if (protectedKeys.has(key)) {
+                    const gmValue = safeGMGet(key);
+                    if (gmValue) {
+                        return gmValue;
+                    }
+                }
+                return null;
+            };
+            Object.defineProperty(Storage.prototype.getItem, 'toString', {
+                value: () => 'function getItem() { [native code] }',
                 configurable: true,
             });
         },
@@ -121,6 +164,10 @@
                 }
                 return nativeRegister.apply(navigator.serviceWorker, arguments);
             };
+            Object.defineProperty(navigator.serviceWorker.register, 'toString', {
+                value: () => 'function register() { [native code] }',
+                configurable: true,
+            });
         },
         _setupUIMonitor: function () {
             const modalSignature = this._decode('5qGI5rWL5Yiw5q2j5Zyo5L2/55So5by655S15bel5YW3');
@@ -151,6 +198,35 @@
             const blockedHostname = 'log.aliyuncs.com';
             const SUBMIT_URL_SIGNATURE = '/api/jx-iresource/survey/submit';
             const SUBMISSION_CONTRIBUTION_DELAY = 5000;
+            const makeNative = (func, name) => {
+                try {
+                    Object.defineProperty(func, 'toString', {
+                        value: () => `function ${name}() { [native code] }`,
+                        configurable: true,
+                        writable: true
+                    });
+                } catch (e) {
+                    console.warn(`[运行时] 无法伪装 ${name}:`, e);
+                }
+            };
+            const protectProperty = (target, key, initialValue) => {
+                let internalValue = initialValue;
+                makeNative(internalValue, key);
+                try {
+                    Object.defineProperty(target, key, {
+                        get: () => internalValue,
+                        set: (newValue) => {
+                            console.log(`[反检测] 拦截到对 ${key} 的重写，正在重新应用伪装...`);
+                            internalValue = newValue;
+                            makeNative(internalValue, key);
+                        },
+                        configurable: true
+                    });
+                } catch (e) {
+                    console.warn(`[运行时] 无法保护属性 ${key}:`, e);
+                    target[key] = internalValue;
+                }
+            };
             async function triggerImmediateContribution(groupId, nodeId) {
                 if (!autoContributeEnabled) {
                     console.log('[自动贡献] 检测到作业提交，但自动贡献功能已关闭，跳过。');
@@ -209,7 +285,7 @@
                     console.error(`[自动贡献] 提交后贡献时发生严重错误:`, error);
                 }
             }
-            window.fetch = function (input, init) {
+            const hookedFetch = function (input, init) {
                 const nativeFetch = self._nativeRefs.fetch;
                 let urlStr;
                 if (typeof input === 'string') { urlStr = input; }
@@ -245,15 +321,13 @@
                 }
                 return nativeFetch.apply(window, arguments);
             };
-            Object.defineProperty(window.fetch, 'toString', {
-                value: () => 'function fetch() { [native code] }',
-                configurable: true,
-            });
-            XMLHttpRequest.prototype.open = function (method, url, ...rest) {
+            protectProperty(window, 'fetch', hookedFetch);
+            const hookedXhrOpen = function (method, url, ...rest) {
                 this._requestURL = url;
                 return self._nativeRefs.xhrOpen.apply(this, arguments);
             };
-            XMLHttpRequest.prototype.send = function (body) {
+            protectProperty(XMLHttpRequest.prototype, 'open', hookedXhrOpen);
+            const hookedXhrSend = function (body) {
                 if (this._requestURL) {
                     try {
                         const urlObj = new URL(this._requestURL, window.location.origin);
@@ -301,8 +375,9 @@
                 }
                 return self._nativeRefs.xhrSend.apply(this, arguments);
             };
+            protectProperty(XMLHttpRequest.prototype, 'send', hookedXhrSend);
             if (self._nativeRefs.sendBeacon) {
-                navigator.sendBeacon = function (url, data) {
+                const hookedSendBeacon = function (url, data) {
                     try {
                         const urlObj = new URL(url, window.location.origin);
                         if (urlObj.hostname.endsWith(blockedHostname)) {
@@ -319,6 +394,7 @@
                         return false;
                     }
                 };
+                protectProperty(navigator, 'sendBeacon', hookedSendBeacon);
             }
             console.log('[运行时] 网络请求拦截器已部署 (含提交后自动贡献功能 - 增强通知版)。');
         },
