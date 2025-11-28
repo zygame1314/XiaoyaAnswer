@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         小雅答答答
 // @license      MIT
-// @version      2.10.1
+// @version      2.10.2
 // @description  小雅平台学习助手 📖，智能整理归纳学习资料 📚，辅助完成练习 💪，并提供便捷的查阅和修改功能 📝！
 // @author       Yi
 // @match        https://*.ai-augmented.com/*
@@ -75,7 +75,6 @@
             });
             window.dispatchEvent = patchedDispatch;
         },
-
         _manageWorkerLifecycle: function () {
             const nativeRegister = this._nativeRefs.register;
             const swTargetName = this._decode('Z2xvYmFsLXNlcnZpY2Utd29ya2VyLmpz');
@@ -219,6 +218,10 @@
                         console.warn(`[运行时] 阻止了向日志服务器的 fetch 请求:`, urlStr);
                         return Promise.resolve(new Response('{"success":true}', { status: 200, headers: { 'Content-Type': 'application/json' } }));
                     }
+                    if (urlObj.hostname === 'static-publication.ai-augmented.com' && /\.(woff|woff2|ttf|eot)$/i.test(urlObj.pathname)) {
+                        console.warn(`[运行时] 阻止了跨域字体请求 (fetch) 以避免 CORS 错误:`, urlStr);
+                        return Promise.resolve(new Response(new Blob([], {type: 'font/woff'}), { status: 200 }));
+                    }
                     if (urlStr.includes(SUBMIT_URL_SIGNATURE) && init && (init.method || '').toUpperCase() === 'POST') {
                         console.log('[自动贡献] 检测到作业提交请求 (fetch)，将在其成功后触发贡献。');
                         const originalFetchPromise = nativeFetch.apply(window, arguments);
@@ -256,6 +259,18 @@
                         if (urlObj.hostname.endsWith(blockedHostname)) {
                             console.warn(`[运行时] 阻止了向日志服务器的 XMLHttpRequest 请求:`, this._requestURL);
                             Object.defineProperties(this, { 'readyState': { value: 4, writable: true }, 'status': { value: 200, writable: true }, 'responseText': { value: '{"success":true}', writable: true }, 'response': { value: '{"success":true}', writable: true } });
+                            this.dispatchEvent(new Event('readystatechange'));
+                            this.dispatchEvent(new Event('load'));
+                            return;
+                        }
+                        if (urlObj.hostname === 'static-publication.ai-augmented.com' && /\.(woff|woff2|ttf|eot)$/i.test(urlObj.pathname)) {
+                            console.warn(`[运行时] 阻止了跨域字体请求以避免 CORS 错误:`, this._requestURL);
+                            Object.defineProperties(this, { 
+                                'readyState': { value: 4, writable: true }, 
+                                'status': { value: 200, writable: true }, 
+                                'responseText': { value: '', writable: true }, 
+                                'response': { value: new Blob([], {type: 'font/woff'}), writable: true } 
+                            });
                             this.dispatchEvent(new Event('readystatechange'));
                             this.dispatchEvent(new Event('load'));
                             return;
@@ -318,7 +333,7 @@
                 };
                 protectProperty(navigator, 'sendBeacon', hookedSendBeacon);
             }
-            console.log('[运行时] 网络请求拦截器已部署 (含提交后自动贡献功能 - 增强通知版)。');
+            console.log('[运行时] 网络请求拦截器已部署。');
         },
         run: function () {
             console.log('[运行时] 正在初始化运行时补丁...');
@@ -4419,11 +4434,11 @@
                 </ul>
                 <h4 style="margin: 20px 0 10px 0; color: #1e3a8a;">图像识别 (Vision / OCR)</h4>
                  <ul style="padding-left: 24px; color: #444; line-height: 1.8; margin: 0;">
-                    <li><strong>默认选项:</strong> 使用主 AI 模型的视觉能力。如果你的主 AI (如 GPT-4o) 支持识图，这是最简单的选择。</li>
+                    <li><strong>默认选项:</strong> 使用主 AI 模型的视觉能力。如果你的主 AI (如 Gemini 2.5 Pro) 支持识图，这是最简单的选择。</li>
                     <li><strong>独立配置:</strong> 指定一个专门的视觉模型来处理图片，再将结果交给主 AI 推理。
                         <ul style="padding-left: 20px; margin-top: 8px; list-style-type: circle;">
-                            <li><strong>优势:</strong> 你可以用便宜的模型看图（如 GLM-4.1V），用强大的模型答题（如 DeepSeek），组合出最高性价比的方案。</li>
-                            <li><strong>免费方案推荐:</strong> 前往 <span style="font-size: 1.1em; vertical-align: -0.1em;">⚙️</span> AI 设置，查看 <strong>SiliconFlow + GLM-4.1V</strong> 的详细配置指南。</li>
+                            <li><strong>优势:</strong> 你可以用便宜的模型看图，用强大的模型答题，组合出最高性价比的方案。</li>
+                            <li><strong>免费方案推荐:</strong> 前往 <span style="font-size: 1.1em; vertical-align: -0.1em;">⚙️</span> AI 设置，查看 <strong>SiliconFlow + DeepSeek-OCR</strong> 的详细配置指南。</li>
                         </ul>
                     </li>
                 </ul>
@@ -4755,7 +4770,7 @@
         }
     }
     async function callSttApi(audioSource, sttConfig) {
-        const { sttProvider, sttEndpoint, sttApiKey, sttModel, apiKey: llmApiKey } = sttConfig;
+        const { sttProvider, sttEndpoint, sttApiKey, sttModel, apiKey: llmApiKey, disableCorrection } = sttConfig;
         if (!sttEndpoint) throw new Error("STT API 地址未配置。");
         const finalApiKey = sttApiKey || llmApiKey;
         if (!finalApiKey) throw new Error("STT API Key 未配置（也未提供备用的 LLM Key）。");
@@ -4763,9 +4778,9 @@
         try {
             switch (sttProvider) {
                 case 'openai_compatible':
-                    return await callWhisperCompatibleApi(audioSource, sttEndpoint, finalApiKey, sttModel);
+                    return await callWhisperCompatibleApi(audioSource, sttEndpoint, finalApiKey, sttModel, disableCorrection);
                 case 'gemini':
-                    return await callGeminiSttApi(audioSource, sttEndpoint, finalApiKey, sttModel);
+                    return await callGeminiSttApi(audioSource, sttEndpoint, finalApiKey, sttModel, disableCorrection);
                 default:
                     throw new Error(`未知的 STT 提供商: ${sttProvider}`);
             }
@@ -4775,7 +4790,7 @@
             throw error;
         }
     }
-    async function callWhisperCompatibleApi(audioSource, endpoint, apiKey, model) {
+    async function callWhisperCompatibleApi(audioSource, endpoint, apiKey, model, disableCorrection = false) {
         let audioBlob;
         let fileName = 'audio.wav';
         if (typeof audioSource === 'string') {
@@ -4790,10 +4805,24 @@
         } else {
             throw new Error('无效的音频源类型');
         }
+        let finalEndpoint = endpoint;
+        if (!disableCorrection) {
+            let cleanEndpoint = endpoint.split('?')[0].replace(/\/$/, '');
+            const targetPath = '/v1/audio/transcriptions';
+            if (!cleanEndpoint.endsWith(targetPath)) {
+                if (cleanEndpoint.includes('/v1')) {
+                    cleanEndpoint = cleanEndpoint.substring(0, cleanEndpoint.indexOf('/v1')) + targetPath;
+                } else {
+                    cleanEndpoint += targetPath;
+                }
+                console.warn("STT Endpoint 已自动修正为:", cleanEndpoint);
+            }
+            finalEndpoint = cleanEndpoint + (endpoint.includes('?') ? endpoint.substring(endpoint.indexOf('?')) : '');
+        }
         const formData = new FormData();
         formData.append('file', audioBlob, fileName);
         formData.append('model', model || 'whisper-1');
-        const sttApiResponse = await fetch(endpoint, {
+        const sttApiResponse = await fetch(finalEndpoint, {
             method: 'POST',
             headers: { 'Authorization': `Bearer ${apiKey}` },
             body: formData
@@ -4810,7 +4839,7 @@
             throw new Error("STT API 返回的数据格式不正确，未找到 'text' 字段。");
         }
     }
-    async function callGeminiSttApi(audioSource, endpoint, apiKey, model) {
+    async function callGeminiSttApi(audioSource, endpoint, apiKey, model, disableCorrection = false) {
         let audioBlob;
         let mimeType;
         if (typeof audioSource === 'string') {
@@ -4847,8 +4876,15 @@
                 },
             ],
         };
-        let finalEndpoint = endpoint.endsWith('/') ? endpoint : endpoint + '/';
-        finalEndpoint += `${model}:generateContent?key=${apiKey}`;
+        let finalEndpoint;
+        if (disableCorrection) {
+            let base = endpoint.endsWith('/') ? endpoint : endpoint + '/';
+            finalEndpoint = `${base}${model}:generateContent?key=${apiKey}`;
+        } else {
+            let cleanBase = endpoint.replace(/\/v\d+(beta)?\/models\/?$/, '').replace(/\/models\/?$/, '').replace(/\/$/, '');
+            finalEndpoint = `${cleanBase}/v1beta/models/${model}:generateContent?key=${apiKey}`;
+            console.log(`[Gemini STT] Endpoint 已修正为: ${finalEndpoint}`);
+        }
         const sttApiResponse = await fetch(finalEndpoint, {
             method: 'POST',
             headers: {
@@ -4937,7 +4973,7 @@
             }
             let jwtToken = null;
             try {
-                const xyGlobalConfig = localStorage.getItem('XY_GLOBAL_CONFIG');
+                const xyGlobalConfig = window.localStorage.getItem('XY_GLOBAL_CONFIG');
                 if (xyGlobalConfig) {
                     jwtToken = JSON.parse(xyGlobalConfig).xy_ai_token;
                 }
@@ -10708,7 +10744,7 @@
         });
     }
     async function exportHomework() {
-        console.log('调用 exportHomework 函数 (带头部信息增强版)');
+        console.log('调用 exportHomework 函数');
         let storedData = localStorage.getItem('answerData');
         if (!storedData) {
             showNotification('未找到存储的数据，请先点击"获取答案"按钮。', {
@@ -13976,19 +14012,19 @@
                         <li><strong>独立配置:</strong> 指定一个专门的视觉模型处理图片，再将结果交给主 AI 模型进行答题。</li>
                     </ul>
                     <p><strong>优势:</strong> 可以组合使用不同模型的优点，例如用最强的视觉模型识图，用最经济的文本模型推理，从而实现<strong>成本和效果的最佳平衡</strong>。</p>
-                    <p style="margin-top: 15px;"><strong>免费方案推荐 - SiliconFlow + GLM-4.1V-9B:</strong></p>
+                    <p style="margin-top: 15px;"><strong>免费方案推荐 - SiliconFlow + DeepSeek-OCR:</strong></p>
                     <p style="font-size: 12px; color: #6b7280; font-style: italic; margin-top: -10px; margin-bottom: 10px;">(注：此为免费方案推荐，无任何商业合作，纯粹因其免费且好用)</p>
-                    <p style="font-size: 13px; color: #555; margin-top: -8px;">这是一个由智谱AI和清华大学联合发布的优秀开源视觉模型，性能强大且有免费额度。</p>
+                    <p style="font-size: 13px; color: #555; margin-top: -8px;">这是一个是由深度求索（DeepSeek AI）推出的一个视觉语言模型，性能强大且限免。</p>
                     <ul style="margin: 10px 0; padding-left: 20px; font-family: 'Courier New', Courier, monospace; font-size: 13px; background-color: #f3f4f6; padding: 10px 15px 10px 30px; border-radius: 8px;">
                         <li><strong>Vision Provider:</strong> 选 "独立的 OpenAI / 兼容接口"</li>
                         <li><strong>Vision Endpoint:</strong> <code>https://api.siliconflow.cn/v1/chat/completions</code></li>
                         <li><strong>Vision API Key:</strong> 填入你在 SiliconFlow 获取的 Key</li>
-                        <li><strong>Vision Model ID:</strong> <code>THUDM/GLM-4.1V-9B-Thinking</code></li>
+                        <li><strong>Vision Model ID:</strong> <code>deepseek-ai/DeepSeek-OCR</code></li>
                     </ul>
                     <p><strong>工作流程示例:</strong> 当你配置好以上视觉模型，并将主AI设置为小雅AI后，脚本处理图片题时会：</p>
                     <ol style="margin: 10px 0; padding-left: 20px; line-height: 1.7; font-size: 13px;">
-                        <li><strong>第一步 (视觉):</strong> 将题目图片发送给 SiliconFlow 平台上的 GLM 模型进行识别。</li>
-                        <li><strong>第二步 (推理):</strong> 将 GLM 返回的图片描述文本，与原题目的其他文字信息整合，再发送给小雅 AI 进行最终的答题推理。</li>
+                        <li><strong>第一步 (视觉):</strong> 将题目图片发送给 SiliconFlow 平台上的 DeepSeek-OCR 模型进行识别。</li>
+                        <li><strong>第二步 (推理):</strong> 将 DeepSeek-OCR 返回的图片描述文本，与原题目的其他文字信息整合，再发送给小雅 AI 进行最终的答题推理。</li>
                     </ol>
                     `
                 );
@@ -14953,7 +14989,7 @@
             let hasVision = false;
             let hasTool = false;
             let hasReasoning = false;
-            let hasText = false;
+            let hasText = true;
             let hasMedia = false;
             let visionVotes = 0;
             let toolVotes = 0;
@@ -15000,12 +15036,11 @@
             if (totalMatches > 0) {
                 const threshold = totalMatches / 2;
                 hasVision = visionVotes >= threshold;
-                hasText = textVotes >= threshold;
                 hasMedia = mediaVotes >= threshold;
                 hasTool = toolVotes >= threshold;
                 hasReasoning = reasoningVotes >= threshold;
             }
-            if (!hasVision && (lowerM.includes('vision') || lowerM.includes('vl') || /\d+(\.\d+)?v\b/.test(lowerM))) {
+            if (!hasVision && (lowerM.includes('vision') || lowerM.includes('vl') || lowerM.includes('ocr') || /\d+(\.\d+)?v\b/.test(lowerM))) {
                 hasVision = true;
             }
             if (!hasReasoning && (lowerM.includes('thinking') || lowerM.includes('reasoner') || lowerM.includes('deepseek-r1') || lowerM.includes('o1'))) {
@@ -16354,7 +16389,7 @@
     async function fetchModelsDevApi() {
         if (modelsDevCache) return modelsDevCache;
         const CACHE_KEY = 'xiaoya_models_dev_cache';
-        const CACHE_EXPIRY = 24 * 60 * 60 * 1000;
+        const CACHE_EXPIRY = 60 * 60 * 1000;
         try {
             const cached = localStorage.getItem(CACHE_KEY);
             if (cached) {
@@ -16472,7 +16507,12 @@
                     notificationElement.style.cursor = 'pointer';
                     notificationElement.onclick = () => {
                         window.open(scriptInfo.downloadUrl, '_blank');
-                        notificationElement.innerHTML = '正在跳转至更新页面...';
+                        notificationElement.innerHTML = '正在跳转至更新页面...<br>更新完成后回到本页将自动刷新';
+                        const reloadOnFocus = () => {
+                            window.removeEventListener('focus', reloadOnFocus);
+                            location.reload();
+                        };
+                        window.addEventListener('focus', reloadOnFocus);
                         setTimeout(() => {
                             if (container.contains(notificationElement)) {
                                 container.removeChild(notificationElement);
