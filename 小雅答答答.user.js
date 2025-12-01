@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         小雅答答答
 // @license      MIT
-// @version      2.10.3
+// @version      2.10.3.1
 // @description  小雅平台学习助手 📖，智能整理归纳学习资料 📚，辅助完成练习 💪，并提供便捷的查阅和修改功能 📝！
 // @author       Yi
 // @match        https://*.ai-augmented.com/*
@@ -14014,7 +14014,7 @@
                     <p><strong>优势:</strong> 可以组合使用不同模型的优点，例如用最强的视觉模型识图，用最经济的文本模型推理，从而实现<strong>成本和效果的最佳平衡</strong>。</p>
                     <p style="margin-top: 15px;"><strong>免费方案推荐 - SiliconFlow + DeepSeek-OCR:</strong></p>
                     <p style="font-size: 12px; color: #6b7280; font-style: italic; margin-top: -10px; margin-bottom: 10px;">(注：此为免费方案推荐，无任何商业合作，纯粹因其免费且好用)</p>
-                    <p style="font-size: 13px; color: #555; margin-top: -8px;">这是一个是由深度求索（DeepSeek AI）推出的一个视觉语言模型，性能强大且限免。</p>
+                    <p style="font-size: 13px; color: #555; margin-top: -8px;">这是由深度求索（DeepSeek AI）推出的一个视觉语言模型，性能强大且限免。</p>
                     <ul style="margin: 10px 0; padding-left: 20px; font-family: 'Courier New', Courier, monospace; font-size: 13px; background-color: #f3f4f6; padding: 10px 15px 10px 30px; border-radius: 8px;">
                         <li><strong>Vision Provider:</strong> 选 "独立的 OpenAI / 兼容接口"</li>
                         <li><strong>Vision Endpoint:</strong> <code>https://api.siliconflow.cn/v1/chat/completions</code></li>
