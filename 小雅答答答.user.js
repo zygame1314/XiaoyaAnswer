@@ -753,9 +753,9 @@
         }
         return new TextRun({ text: label || url, color: '0000EE', underline: {} });
     }
-    let autoFetchEnabled = localStorage.getItem('autoFetchEnabled') === 'true';
-    let autoFillEnabled = localStorage.getItem('autoFillEnabled') === 'true';
-    let autoContributeEnabled = localStorage.getItem('autoContributeEnabled') !== 'false';
+    let autoFetchEnabled = String(localStorage.getItem('autoFetchEnabled')) === 'true';
+    let autoFillEnabled = String(localStorage.getItem('autoFillEnabled')) === 'true';
+    let autoContributeEnabled = String(localStorage.getItem('autoContributeEnabled')) !== 'false';
     let isProcessing = false;
     let currentBatchAbortController = null;
     const activeAIControllers = new Set();
