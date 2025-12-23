@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         小雅答答答
 // @license      MIT
-// @version      2.10.3.1
+// @version      2.10.4
 // @description  小雅平台学习助手 📖，智能整理归纳学习资料 📚，辅助完成练习 💪，并提供便捷的查阅和修改功能 📝！
 // @author       Yi
 // @match        https://*.ai-augmented.com/*
@@ -12,12 +12,7 @@
 // @grant        GM_xmlhttpRequest
 // @grant        GM_info
 // @run-at       document-start
-// @connect      api.open.uc.cn
-// @connect      page-souti.myquark.cn
-// @connect      api.qrserver.com
-// @connect      ai-augmented.com
-// @connect      g.alicdn.com
-// @connect      models.dev
+// @connect      *
 // @require      https://cdn.jsdmirror.com/npm/katex@0.16.9/dist/katex.min.js
 // @require      https://cdn.jsdmirror.com/npm/docx@7.1.0/build/index.min.js
 // @require      https://cdn.jsdmirror.com/npm/file-saver@2.0.5/dist/FileSaver.min.js
@@ -220,7 +215,7 @@
                     }
                     if (urlObj.hostname === 'static-publication.ai-augmented.com' && /\.(woff|woff2|ttf|eot)$/i.test(urlObj.pathname)) {
                         console.warn(`[运行时] 阻止了跨域字体请求 (fetch) 以避免 CORS 错误:`, urlStr);
-                        return Promise.resolve(new Response(new Blob([], {type: 'font/woff'}), { status: 200 }));
+                        return Promise.resolve(new Response(new Blob([], { type: 'font/woff' }), { status: 200 }));
                     }
                     if (urlStr.includes(SUBMIT_URL_SIGNATURE) && init && (init.method || '').toUpperCase() === 'POST') {
                         console.log('[自动贡献] 检测到作业提交请求 (fetch)，将在其成功后触发贡献。');
@@ -265,11 +260,11 @@
                         }
                         if (urlObj.hostname === 'static-publication.ai-augmented.com' && /\.(woff|woff2|ttf|eot)$/i.test(urlObj.pathname)) {
                             console.warn(`[运行时] 阻止了跨域字体请求以避免 CORS 错误:`, this._requestURL);
-                            Object.defineProperties(this, { 
-                                'readyState': { value: 4, writable: true }, 
-                                'status': { value: 200, writable: true }, 
-                                'responseText': { value: '', writable: true }, 
-                                'response': { value: new Blob([], {type: 'font/woff'}), writable: true } 
+                            Object.defineProperties(this, {
+                                'readyState': { value: 4, writable: true },
+                                'status': { value: 200, writable: true },
+                                'responseText': { value: '', writable: true },
+                                'response': { value: new Blob([], { type: 'font/woff' }), writable: true }
                             });
                             this.dispatchEvent(new Event('readystatechange'));
                             this.dispatchEvent(new Event('load'));
@@ -2686,13 +2681,13 @@
             const parsedData = JSON.parse(storedData);
             if (Object.values(parsedData).some(val => typeof val === 'number')) {
                 console.log('[贡献数据迁移] 检测到旧的课程级冷却数据，将清空以使用新的作业级冷却机制。');
-                localStorage.removeItem( CONTRIBUTED_ASSIGNMENTS_KEY);
+                localStorage.removeItem(CONTRIBUTED_ASSIGNMENTS_KEY);
                 return {};
             }
             return (typeof parsedData === 'object' && parsedData !== null) ? parsedData : {};
         } catch (error) {
             console.error('读取已贡献作业数据失败，将重置:', error);
-            localStorage.removeItem( CONTRIBUTED_ASSIGNMENTS_KEY);
+            localStorage.removeItem(CONTRIBUTED_ASSIGNMENTS_KEY);
             return {};
         }
     }
@@ -2738,9 +2733,9 @@
                 }
             );
             if (confirmed) {
-                localStorage.removeItem( 'xiaoya_access_token');
-                localStorage.removeItem( 'xiaoya_refresh_token');
-                localStorage.removeItem( 'xiaoya_bound_user_id');
+                localStorage.removeItem('xiaoya_access_token');
+                localStorage.removeItem('xiaoya_refresh_token');
+                localStorage.removeItem('xiaoya_bound_user_id');
                 setTimeout(() => promptActivationCode(), 300);
             }
             return false;
@@ -2943,7 +2938,7 @@
                 localStorage.setItem('paperDescription', paperDescription);
                 console.log('[全局上下文] 已保存作业头部描述信息。');
             } else {
-                localStorage.removeItem( 'paperDescription');
+                localStorage.removeItem('paperDescription');
             }
             let questionsFromResource = JSON.parse(JSON.stringify(resourceData.data.resource.questions || []));
             progress.update(7, 100, '正在获取答题记录', '%');
@@ -3167,7 +3162,7 @@
             const errorMessage = error.message.toLowerCase();
             if (errorMessage.includes('欺诈行为警告')) {
                 showNotification('检测到异常操作，你的授权已被吊销，请重新激活。', { type: 'error', duration: 8000, animation: 'scale' });
-                localStorage.removeItem( 'xiaoya_access_token'); localStorage.removeItem( 'xiaoya_refresh_token'); setTimeout(promptActivationCode, 1000);
+                localStorage.removeItem('xiaoya_access_token'); localStorage.removeItem('xiaoya_refresh_token'); setTimeout(promptActivationCode, 1000);
             } else if (errorMessage.includes('激活')) {
                 showNotification('你的凭证已失效或需要激活，请操作...', { type: 'warning', duration: 5000, animation: 'scale' });
                 setTimeout(promptActivationCode, 500);
@@ -3603,7 +3598,7 @@
                 localStorage.setItem('paperDescription', paperDescription);
                 console.log('[全局上下文 - 已提交] 已同步更新作业头部描述信息。');
             } else {
-                localStorage.removeItem( 'paperDescription');
+                localStorage.removeItem('paperDescription');
                 console.log('[全局上下文 - 已提交] 当前作业无头部描述，已清除旧的缓存。');
             }
             const paper_id = resourceData.data.resource.id;
@@ -4408,122 +4403,91 @@
             </h2>
             <p style="color: #444; line-height: 1.8; font-size: 16px;">
                 欢迎使用 <span class="highlight-text" style="font-weight: 600;">小雅答答答</span> 答题助手！
-                探索以下功能，让你的学习事半功倍～
+                这里有关于脚本功能的详细说明。
             </p>
-            <div style="margin: 32px 0; padding: 20px; background: #f8f9fa; border-radius: 12px; border-left: 4px solid #4e4376;">
-                <h3 style="margin: 0 0 16px 0; color: #2b5876; display: flex; align-items: center;">
+            <div style="margin: 24px 0; padding: 20px; background: #f8f9fa; border-radius: 12px; border-left: 4px solid #4e4376;">
+                <h3 style="margin: 0 0 12px 0; color: #2b5876; font-size: 18px; display: flex; align-items: center;">
                     <span class="feature-icon">🎯</span> 核心功能
                 </h3>
-                <ol style="padding-left: 24px; color: #444; line-height: 1.8; margin: 0;">
-                    <li><strong>获取答案</strong> - 快速从题库获取参考答案。</li>
-                    <li><strong>填写答案</strong> - 一键自动填充答案到页面。</li>
-                    <li><strong>编辑答案</strong> - 灵活修改，支持图片、音频和强大的 AI 辅助。</li>
-                    <li><strong>夸克搜题</strong> - 使用夸克搜索引擎智能搜题，快速获取互联网上的相关答案。</li>
-                    <li><strong>导出作业</strong> - 支持导出为 Word(.docx) 或 Markdown(.md)。</li>
+                <ol style="padding-left: 20px; color: #444; line-height: 1.6; margin: 0; font-size: 14px;">
+                    <li><strong>获取答案</strong> - 从题库获取参考答案，这是答题的第一步。</li>
+                    <li><strong>填写答案</strong> - 将获取到的答案、AI生成的答案一键自动填充到页面。</li>
+                    <li><strong>编辑答案</strong> - 灵活修改，支持手动调整、上传图片/音频辅助AI重新生成。</li>
+                    <li><strong>夸克搜题</strong> - 调用夸克搜索引擎，快速查找互联网上的相关解析。</li>
+                    <li><strong>导出作业</strong> - 将整页题目和答案导出为 Word(.docx) 或 Markdown(.md) 格式。</li>
                 </ol>
             </div>
-            <div style="margin: 32px 0; padding: 20px; background: #f0f9ff; border-radius: 12px; border-left: 4px solid #3b82f6;">
-                <h3 style="margin: 0 0 16px 0; color: #1e40af; display: flex; align-items: center;">
-                    <span class="feature-icon">🤖</span> AI 助手
+            <div style="margin: 24px 0; padding: 20px; background: #f0f9ff; border-radius: 12px; border-left: 4px solid #3b82f6;">
+                <h3 style="margin: 0 0 12px 0; color: #1e40af; font-size: 18px; display: flex; align-items: center;">
+                    <span class="feature-icon">🤖</span> AI 智能解题
                 </h3>
-                <p style="margin-top: -10px; margin-bottom: 20px; font-size: 14.5px;">脚本现已采用模块化设计，你可以为 <strong>文本推理 (LLM)</strong> 和 <strong>图像识别 (Vision)</strong> 分别配置不同的 AI 模型，实现效果与成本的最佳平衡！</p>
-                <h4 style="margin: 15px 0 10px 0; color: #1e3a8a;">主 AI (文本推理)</h4>
-                <ul style="padding-left: 24px; color: #444; line-height: 1.8; margin: 0;">
-                    <li><strong>默认选项：小雅 AI</strong> - 无需任何配置，开箱即用，能处理绝大多数文本题目。</li>
-                    <li><strong>高级选项：自定义 API</strong> - 可灵活配置 OpenAI、Gemini、Azure、Anthropic 等服务。特别是 <strong>Gemini 2.5+</strong> 模型，可以直接处理图片、音频和视频，实现强大的多模态理解。</li>
-                </ul>
-                <h4 style="margin: 20px 0 10px 0; color: #1e3a8a;">图像识别 (Vision / OCR)</h4>
-                 <ul style="padding-left: 24px; color: #444; line-height: 1.8; margin: 0;">
-                    <li><strong>默认选项:</strong> 使用主 AI 模型的视觉能力。如果你的主 AI (如 Gemini 2.5 Pro) 支持识图，这是最简单的选择。</li>
-                    <li><strong>独立配置:</strong> 指定一个专门的视觉模型来处理图片，再将结果交给主 AI 推理。
-                        <ul style="padding-left: 20px; margin-top: 8px; list-style-type: circle;">
-                            <li><strong>优势:</strong> 你可以用便宜的模型看图，用强大的模型答题，组合出最高性价比的方案。</li>
-                            <li><strong>免费方案推荐:</strong> 前往 <span style="font-size: 1.1em; vertical-align: -0.1em;">⚙️</span> AI 设置，查看 <strong>SiliconFlow + DeepSeek-OCR</strong> 的详细配置指南。</li>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+                    <div>
+                        <h4 style="margin: 5px 0 8px 0; color: #1e3a8a; font-size: 15px;">文本推理 (LLM)</h4>
+                        <ul style="padding-left: 18px; color: #444; line-height: 1.6; margin: 0; font-size: 13.5px;">
+                            <li><strong>小雅 AI</strong>: 默认免费，无需配置。</li>
+                            <li><strong>自定义 API</strong>: 支持 OpenAI, Gemini, Claude 等，更强更智能。</li>
                         </ul>
-                    </li>
-                </ul>
+                    </div>
+                    <div>
+                        <h4 style="margin: 5px 0 8px 0; color: #1e3a8a; font-size: 15px;">图像/多模态</h4>
+                        <ul style="padding-left: 18px; color: #444; line-height: 1.6; margin: 0; font-size: 13.5px;">
+                            <li><strong>Vision 模型</strong>: 独立配置视觉模型(如OCR)，高性价比。</li>
+                            <li><strong>媒体理解</strong>: Gemini 2.5+ 可直接"看"视频、"听"音频，无需转录。</li>
+                        </ul>
+                    </div>
+                </div>
             </div>
-            <div id="multimodal-feature" style="margin: 32px 0; padding: 20px; background: #fff7ed; border-radius: 12px; border-left: 4px solid #f97316;">
-                <h3 style="margin: 0 0 16px 0; color: #9a3412; display: flex; align-items: center;">
-                    <span class="feature-icon">🎬</span> 多模态媒体理解 (音频/视频题)
+            <div style="margin: 24px 0; padding: 20px; background: #fff7ed; border-radius: 12px; border-left: 4px solid #f97316;">
+                <h3 style="margin: 0 0 12px 0; color: #9a3412; font-size: 18px; display: flex; align-items: center;">
+                    <span class="feature-icon">☁️</span> 配置云同步 (WebDAV)
                 </h3>
-                <p style="margin-top: -10px; margin-bottom: 20px; font-size: 14.5px;">脚本现已具备强大的媒体分析能力，能够让AI“听懂”音频、“看懂”视频，完美解决听力题和视频分析题。</p>
-                <h4 style="margin: 15px 0 10px 0; color: #92400e;">模式一：Gemini 原生媒体理解 (推荐)</h4>
-                <p style="font-size: 13.5px; color: #555; margin-top: -8px;">如果你在“AI设置”中选择了 <strong>Google Gemini</strong> (推荐 <code>gemini-2.5-flash</code> 或更高版本) 作为主AI，脚本将解锁最强的处理模式：</p>
-                <ul style="padding-left: 24px; color: #444; line-height: 1.8; margin: 0;">
-                    <li><strong>一体化分析：</strong> 直接将整个音频或视频文件发送给 Gemini，AI会同时理解声音和画面，提供最精准的回答。</li>
-                    <li><strong>成本控制：</strong> 你可以选择是否要让AI“<strong>分析视频画面</strong>”。对于纯听力题，可以关闭此项，AI将只分析音轨，从而节省大量Token费用。</li>
-                    <li><strong>配置：</strong> 在AI设置中，选择 Gemini 提供商后，在“媒体处理模式”中选择“原生媒体理解”即可。</li>
-                </ul>
-                <h4 style="margin: 20px 0 10px 0; color: #92400e;">模式二：独立STT语音转文本 (兼容模式)</h4>
-                <p style="font-size: 13.5px; color: #555; margin-top: -8px;">当你的主AI不支持直接处理音频时（如 OpenAI、Claude 等），脚本会自动采用此模式。它会先将媒体中的声音转换为文字，再将文字交给主AI进行回答。</p>
-                <ul style="padding-left: 24px; color: #444; line-height: 1.8; margin: 0;">
-                    <li><strong>工作流程：</strong> 下载媒体 → 提取/转码音频 → 调用STT服务转录 → 将文本提交给主AI。</li>
-                    <li><strong>免费方案推荐：</strong> 前往 <span style="font-size: 1.1em; vertical-align: -0.1em;">⚙️</span> AI 设置，在“媒体处理模式”中选择“独立STT转录”后，即可查看详细的 <strong>SiliconFlow</strong> 免费方案配置指南。</li>
-                </ul>
-                <h4 style="margin: 20px 0 10px 0; color: #92400e;">临时提示词与图片上传</h4>
-                <ul style="padding-left: 24px; color: #444; line-height: 1.8; margin: 0;">
-                    <li>在“查看/编辑答案”面板中，你可以找到“临时AI提示词”区域。</li>
-                    <li><strong>动态上下文:</strong> 在这里输入的文本或上传的图片，将作为补充材料，在本次 AI 处理中提供给模型。</li>
-                    <li><strong>应用场景:</strong> 非常适合补充作业描述中缺失的图表、提供解题所需的公式图片，或处理需要关联多张图片的问题。</li>
-                    <li><strong>上传方式:</strong> 支持点击选择、拖拽和直接从剪贴板粘贴图片。</li>
+                <p style="margin: 0 0 10px 0; font-size: 14px; color: #444;">脚本不再担心重装丢失配置！通过 WebDAV (推荐坚果云)，你可以将你的个性化设置、Prompt、API Key 在多台设备间无缝同步。</p>
+                <ul style="padding-left: 20px; color: #444; line-height: 1.6; margin: 0; font-size: 13.5px;">
+                    <li><strong>配置方法</strong>: 进入 <span style="font-size: 1.1em; vertical-align: -0.1em;">⚙️</span> 设置面板底部，展开 WebDAV 区域，点击 <span style="color:#6366f1;">❓ 如何获取坚果云配置</span> 查看详细教程。</li>
+                    <li><strong>多档案管理</strong>: 支持保存多套配置方案（如"考研专用"、"英语专用"），并随意切换。</li>
+                    <li><strong>云端管理</strong>: 直接在脚本内查看云端所有备份，一键恢复或清理旧档。</li>
                 </ul>
             </div>
-            <div style="display: flex; flex-direction: column; gap: 20px; margin: 32px 0;">
-                 <div style="padding: 24px; background: #fff; border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.06);">
-                     <h3 style="margin: 0 0 16px 0; color: #2b5876; display: flex; align-items: center;">
-                        <span class="feature-icon">⌨️</span> 快捷键
+            <div style="display: flex; gap: 20px; margin: 24px 0;">
+                 <div style="flex: 1; padding: 20px; background: #fff; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.06);">
+                     <h3 style="margin: 0 0 12px 0; color: #2b5876; font-size: 16px; display: flex; align-items: center;">
+                        <span class="feature-icon">⌨️</span> 常用快捷键
                     </h3>
-                    <ul style="padding-left: 20px; color: #444; line-height: 1.8; margin: 0;">
-                        <li><strong>Ctrl + Shift + A</strong>: 获取答案</li>
-                        <li><strong>Ctrl + Shift + F</strong>: 填写答案</li>
-                        <li><strong>Ctrl + Shift + E</strong>: 编辑答案</li>
-                        <li><strong>Ctrl + Shift + Q</strong>: 导出作业 (Word)</li>
-                        <li><strong>Ctrl + Shift + M</strong>: 导出作业 (Markdown)</li>
+                    <ul style="padding-left: 16px; color: #555; line-height: 1.6; margin: 0; font-size: 13px;">
+                        <li><strong>Ctrl+Shift+A</strong>: 获取答案</li>
+                        <li><strong>Ctrl+Shift+F</strong>: 填写答案</li>
+                        <li><strong>Ctrl+Shift+E</strong>: 编辑答案</li>
+                        <li><strong>Ctrl+Shift+Q</strong>: 导出Word</li>
+                    </ul>
+                </div>
+                <div style="flex: 1; padding: 20px; background: #fff; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.06);">
+                    <h3 style="margin: 0 0 12px 0; color: #2b5876; font-size: 16px; display: flex; align-items: center;">
+                        <span class="feature-icon">💡</span> 重要提示
+                    </h3>
+                    <ul style="padding-left: 16px; color: #555; line-height: 1.6; margin: 0; font-size: 13px;">
+                        <li style="margin-bottom: 6px;">必须在<strong>作业的资源页面</strong>(URL含/resource/)点击获取。</li>
+                        <li style="margin-bottom: 6px;">AI 功能需自备 Key，脚本不提供。</li>
+                        <li>请自行核对答案，AI 仅供辅助。</li>
                     </ul>
                 </div>
             </div>
-            <div style="margin: 32px 0; padding: 24px; background: #ffffff; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.08);">
-                <h3 style="margin: 0 0 20px 0; color: #2b5876; display: flex; align-items: center; font-size: 18px;">
-                    <span class="feature-icon" style="margin-right: 8px;">💡</span> 使用提示
-                </h3>
-                <ul style="padding-left: 20px; color: #555; line-height: 1.8; margin: 0;">
-                    <li style="border-bottom: 1px solid #edf0f2; padding: 12px 0;">使用前请确保已登录小雅平台。</li>
-                    <li style="border-bottom: 1px solid #edf0f2; padding: 12px 0;"><strong>必须在作业的“资源”页面</strong>（URL 包含 /resource/）点击“获取答案”，而不是在答题页面。</li>
-                    <li style="border-bottom: 1px solid #edf0f2; padding: 12px 0;">AI 功能需要你在设置中提供自己的 API Key，脚本不提供任何 Key。</li>
-                    <li style="border-bottom: 1px solid #edf0f2; padding: 12px 0;">AI 解题能力有限，尤其是复杂题目，请务必自行检查核对答案。</li>
-                </ul>
+             <div style="margin-top: 32px; padding: 20px; background: #fff; border-radius: 12px; border: 1px dashed #4e4376; display: flex; align-items: center; justify-content: space-between;">
+                <div>
+                   <h3 style="margin: 0 0 5px 0; color: #2b5876; font-size: 16px;">
+                        <span class="feature-icon">🤝</span> 反馈与交流
+                    </h3>
+                    <p style="color: #666; font-size: 13px; margin: 0;">
+                        遇到问题？欢迎邮件反馈或访问主页。
+                    </p>
+                </div>
+                <div style="font-size: 13px;">
+                     <a href="mailto:zygame1314@gmail.com" style="color: #4e4376; margin-right: 15px; text-decoration: none;">📧 发送邮件</a>
+                     <a href="https://blog.zygame1314.site" target="_blank" style="color: #4e4376; text-decoration: none;">🌐 个人主页</a>
+                </div>
             </div>
-            <div style="margin-top: 32px; padding: 24px; background: #fff; border-radius: 12px; border: 1px dashed #4e4376;">
-                <h3 style="margin: 0 0 16px 0; color: #2b5876; display: flex; align-items: center;">
-                    <span class="feature-icon">🤝</span> 需要帮助？
-                </h3>
-                <p style="color: #444; line-height: 1.8; margin: 0;">
-                    遇到问题或有任何建议，欢迎发送邮件至 <a href="mailto:zygame1314@gmail.com"
-                            style="color: #4e4376; text-decoration: none; border-bottom: 1px dashed #4e4376;">
-                        zygame1314@gmail.com
-                    </a>
-                    或访问
-                    <a href="https://blog.zygame1314.site" target="_blank"
-                    style="color: #4e4376; text-decoration: none; border-bottom: 1px dashed #4e4376;">
-                        我的个人主页
-                    </a>。
-                </p>
-            </div>
-            <div style="margin: 32px 0; padding: 20px; background: #fffbeB; border-radius: 12px; border-left: 4px solid #f59e0b;">
-                <h3 style="margin: 0 0 16px 0; color: #92400e; display: flex; align-items: center;">
-                    <span class="feature-icon" style="animation: none;">🛡️</span> 安全与公平使用
-                </h3>
-                <p style="color: #444; line-height: 1.8; margin: 0;">
-                    为保障服务稳定和所有用户的公平体验，请务必：
-                </p>
-                <ul style="padding-left: 24px; color: #444; line-height: 1.8; margin-top: 10px;">
-                    <li><strong>保持最新版本：</strong>脚本会不定期更新以修复问题和适配平台变化。过旧的版本可能会无法使用或导致错误。</li>
-                    <li><strong>使用官方渠道：</strong>请始终从官方发布渠道获取脚本，使用被篡改或来源不明的脚本可能导致数据错误，甚至账户被系统安全策略禁用。</li>
-                </ul>
-            </div>
-            <p style="margin: 32px 0 0 0; text-align: center; color: #666;">别太依赖脚本哦，多动脑才是真本事！😉</p>
-            <p style="color: #999; font-size: 14px; text-align: center; margin-top: 10px;">
+            <p style="margin: 30px 0 0 0; text-align: center; color: #888; font-size: 13px;">别太依赖脚本哦，多动脑才是真本事！😉</p>
+            <p style="color: #bbb; font-size: 12px; text-align: center; margin-top: 5px;">
                 版权 © zygame1314 保留所有权利。
             </p>
         `;
@@ -12763,6 +12727,127 @@
         html = html.replace(/^<br>|<br>$/g, '');
         return html;
     }
+    class WebDavClient {
+        constructor(url, username, password) {
+            this.url = url.endsWith('/') ? url : url + '/';
+            this.auth = 'Basic ' + btoa(username + ':' + password);
+        }
+        request(method, path, options = {}) {
+            return new Promise((resolve, reject) => {
+                const fullUrl = this.url + path;
+                const headers = {
+                    'Authorization': this.auth,
+                    ...(options.headers || {})
+                };
+                GM_xmlhttpRequest({
+                    method: method,
+                    url: fullUrl,
+                    headers: headers,
+                    data: options.body,
+                    timeout: 20000,
+                    onload: (response) => {
+                        const mockResponse = {
+                            ok: response.status >= 200 && response.status < 300,
+                            status: response.status,
+                            statusText: response.statusText,
+                            responseText: response.responseText,
+                            text: () => Promise.resolve(response.responseText),
+                            json: () => Promise.resolve(JSON.parse(response.responseText))
+                        };
+                        resolve(mockResponse);
+                    },
+                    onerror: (err) => {
+                        console.error(`WebDAV ${method} 错误:`, err);
+                        reject(new Error('网络错误'));
+                    },
+                    ontimeout: () => {
+                        reject(new Error('连接超时'));
+                    }
+                });
+            });
+        }
+        async verify() {
+            try {
+                const response = await this.request('PROPFIND', '', {
+                    headers: {
+                        'Depth': '0',
+                        'Content-Type': 'application/xml'
+                    }
+                });
+                return response.ok;
+            } catch (e) {
+                console.error('WebDAV 验证错误:', e);
+                return false;
+            }
+        }
+        async put(filename, content) {
+            try {
+                const response = await this.request('PUT', filename, {
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: content
+                });
+                if (!response.ok) {
+                    throw new Error(`上传失败: ${response.status} ${response.statusText}`);
+                }
+                return true;
+            } catch (e) {
+                console.error('WebDAV 上传错误:', e);
+                throw e;
+            }
+        }
+        async get(filename) {
+            try {
+                const response = await this.request('GET', filename);
+                if (!response.ok) {
+                    if (response.status === 404) return null;
+                    throw new Error(`HTTP ${response.status} ${response.statusText}`);
+                }
+                return await response.text();
+            } catch (e) {
+                console.error('WebDAV GET 错误:', e);
+                throw e;
+            }
+        }
+        async mkcol(path) {
+            try {
+                const response = await this.request('MKCOL', path);
+                return response.ok || response.status === 405;
+            } catch (e) {
+                console.error('WebDAV MKCOL 错误:', e);
+                return false;
+            }
+        }
+    }
+    class ProfileHelper {
+        static getProfiles() {
+            try {
+                return JSON.parse(localStorage.getItem('aiConfigProfiles') || '[]');
+            } catch (e) {
+                return [];
+            }
+        }
+        static saveProfiles(profiles) {
+            localStorage.setItem('aiConfigProfiles', JSON.stringify(profiles));
+        }
+        static addProfile(name, config) {
+            const profiles = this.getProfiles();
+            const existingIndex = profiles.findIndex(p => p.name === name);
+            if (existingIndex >= 0) {
+                profiles[existingIndex].config = config;
+                profiles[existingIndex].timestamp = Date.now();
+            } else {
+                profiles.push({ name, config, timestamp: Date.now() });
+            }
+            this.saveProfiles(profiles);
+        }
+        static deleteProfile(name) {
+            let profiles = this.getProfiles();
+            profiles = profiles.filter(p => p.name !== name);
+            this.saveProfiles(profiles);
+        }
+    }
     function showAISettingsPanel() {
         const OPENAI_COMPATIBLE_PRESETS = [
             {
@@ -12878,12 +12963,12 @@
                 "notes": "阿里巴巴旗下大模型，支持多模态输入，适合企业级应用，提供免费试用。"
             },
             {
-                "id": "nvidia",
-                "name": "NVIDIA",
-                "endpoint": "https://integrate.api.nvidia.com/v1/chat/completions",
-                "domain": "nvidia.com",
+                "id": "cerebras",
+                "name": "Cerebras",
+                "endpoint": "https://api.cerebras.ai/v1/chat/completions",
+                "domain": "cerebras.ai",
                 "category": "International",
-                "notes": "NVIDIA提供的AI推理平台，结合GPU加速，适合高性能计算任务。"
+                "notes": "以极高的推理速度著称，采用专门的晶圆级引擎（WSE），适合对延迟极其敏感的任务。"
             },
             {
                 "id": "tencent",
@@ -12902,6 +12987,833 @@
                 "notes": "国产开源大模型，性能强劲，适合开发者社区和定制化需求。"
             }
         ];
+        function getFormConfig() {
+            const selectedProvider = inputElements['ai-provider'].getValue();
+            const selectedPresetId = (selectedProvider === 'openai') ? inputElements['openai-preset'].getValue() : 'custom';
+            const isPresetSelected = selectedProvider === 'openai' && selectedPresetId !== 'custom';
+            let endpointToSave = inputElements['ai-endpoint'].value.trim();
+            if (selectedProvider === 'openai' && selectedPresetId !== 'custom') {
+                const preset = OPENAI_COMPATIBLE_PRESETS.find(p => p.id === selectedPresetId);
+                if (preset) endpointToSave = preset.endpoint;
+            }
+            return {
+                provider: selectedProvider,
+                openaiPreset: selectedPresetId,
+                isPreset: isPresetSelected,
+                endpoint: endpointToSave,
+                apiKey: inputElements['ai-key'].value.trim(),
+                model: inputElements['ai-model'].getValue(),
+                geminiThinkingEnabled: inputElements['gemini-thinking-enabled'].checked,
+                geminiThinkingBudgetMode: inputElements['gemini-thinking-budget-mode'].getValue(),
+                geminiThinkingBudgetCustom: parseInt(inputElements['gemini-thinking-budget-custom'].value, 10) || 8192,
+                temperature: parseFloat(inputElements['ai-temperature'].value) || 0.7,
+                max_tokens: parseInt(inputElements['ai-max-tokens'].value, 10) || 8000,
+                azureApiVersion: inputElements['ai-azure-apiversion'].value.trim(),
+                disableCorrection: inputElements['ai-disable-correction'].checked,
+                disableMaxTokens: inputElements['ai-disable-max-tokens'].checked,
+                autoScrollEnabled: inputElements['ai-auto-scroll'].checked,
+                visionEnabled: inputElements['ai-vision-enabled'].checked,
+                batchConcurrency: inputElements['ai-batch-concurrency'].value,
+                requestInterval: parseInt(inputElements['ai-request-interval'].value, 10) || 200,
+                xiaoyaAiMode: inputElements['xiaoya-ai-mode'].getValue(),
+                visionProvider: inputElements['vision-provider'].getValue(),
+                visionEndpoint: inputElements['vision-endpoint'].value.trim(),
+                visionApiKey: inputElements['vision-api-key'].value.trim(),
+                visionModel: inputElements['vision-model'].getValue(),
+                audioProcessingMode: inputElements['audio-processing-mode'].getValue(),
+                geminiAnalyzeVideoFramesEnabled: inputElements['gemini-analyze-video-frames-enabled'].checked,
+                sttEnabled: inputElements['stt-enabled'].checked,
+                sttVideoEnabled: inputElements['stt-video-enabled'].checked,
+                sttProvider: inputElements['stt-provider'].getValue(),
+                sttEndpoint: inputElements['stt-endpoint'].value.trim(),
+                sttApiKey: inputElements['stt-api-key'].value.trim(),
+                sttModel: inputElements['stt-model'].value.trim(),
+                customPrompts: (() => {
+                    const prompts = {};
+                    Object.keys(defaultPrompts).forEach(typeCode => {
+                        const el = inputElements[`prompt-type-${typeCode}`];
+                        if (el && el.value.trim() !== defaultPrompts[typeCode].trim()) {
+                            prompts[typeCode] = el.value;
+                        }
+                    });
+                    return prompts;
+                })()
+            };
+        }
+        function applyConfigToForm(config) {
+            if (!config) return;
+            const setV = (id, val) => {
+                const el = inputElements[id];
+                if (!el) return;
+                if (el.setValue) el.setValue(val);
+                else if (el.type === 'checkbox') el.checked = !!val;
+                else el.value = val !== undefined ? val : '';
+                el.dispatchEvent(new Event('change'));
+                el.dispatchEvent(new Event('input'));
+            };
+            setV('ai-provider', config.provider);
+            setV('openai-preset', config.openaiPreset);
+            setV('ai-endpoint', config.endpoint);
+            setV('ai-key', config.apiKey);
+            setV('ai-model', config.model);
+            setV('gemini-thinking-enabled', config.geminiThinkingEnabled);
+            setV('gemini-thinking-budget-mode', config.geminiThinkingBudgetMode);
+            setV('gemini-thinking-budget-custom', config.geminiThinkingBudgetCustom);
+            setV('ai-temperature', config.temperature);
+            setV('ai-max-tokens', config.max_tokens);
+            setV('ai-azure-apiversion', config.azureApiVersion);
+            setV('ai-disable-correction', config.disableCorrection);
+            setV('ai-disable-max-tokens', config.disableMaxTokens);
+            setV('ai-auto-scroll', config.autoScrollEnabled);
+            setV('ai-vision-enabled', config.visionEnabled);
+            setV('ai-batch-concurrency', config.batchConcurrency);
+            setV('ai-request-interval', config.requestInterval);
+            setV('xiaoya-ai-mode', config.xiaoyaAiMode);
+            setV('vision-provider', config.visionProvider);
+            setV('vision-endpoint', config.visionEndpoint);
+            setV('vision-api-key', config.visionApiKey);
+            setV('vision-model', config.visionModel);
+            setV('audio-processing-mode', config.audioProcessingMode);
+            setV('gemini-analyze-video-frames-enabled', config.geminiAnalyzeVideoFramesEnabled);
+            setV('stt-enabled', config.sttEnabled);
+            setV('stt-provider', config.sttProvider);
+            setV('stt-endpoint', config.sttEndpoint);
+            setV('stt-api-key', config.sttApiKey);
+            setV('stt-model', config.sttModel);
+            if (config.customPrompts) {
+                Object.keys(defaultPrompts).forEach(typeCode => {
+                    const val = config.customPrompts[typeCode];
+                    const el = inputElements[`prompt-type-${typeCode}`];
+                    if (el) {
+                        el.value = val || defaultPrompts[typeCode];
+                    }
+                });
+            }
+        }
+        function createWebDavManager() {
+            const details = document.createElement('details');
+            details.style.cssText = `
+                border: 1px solid rgba(99, 102, 241, 0.3);
+                border-radius: 16px;
+                margin-top: 25px;
+                background: linear-gradient(135deg, rgba(238, 242, 255, 0.95) 0%, rgba(224, 231, 255, 0.9) 100%);
+                margin-bottom: 20px;
+                box-shadow: 0 4px 15px rgba(99, 102, 241, 0.1);
+                overflow: hidden;
+                transition: all 0.3s ease;
+            `;
+            details.onmouseenter = () => details.style.boxShadow = '0 6px 20px rgba(99, 102, 241, 0.15)';
+            details.onmouseleave = () => details.style.boxShadow = '0 4px 15px rgba(99, 102, 241, 0.1)';
+            const summary = document.createElement('summary');
+            summary.innerHTML = `
+                <div style="display:flex; align-items:center; gap:12px;">
+                    <span style="font-size:20px;">📂</span>
+                    <span>多配置管理 & WebDAV 云同步</span>
+                    <span style="font-size:20px;">☁️</span>
+                </div>
+            `;
+            summary.style.cssText = `
+                padding: 16px 20px;
+                font-weight: 600;
+                color: #4f46e5;
+                font-size: 15px;
+                cursor: pointer;
+                list-style: none;
+                background: linear-gradient(90deg, rgba(255,255,255,0.8) 0%, rgba(238,242,255,0.6) 100%);
+                border-bottom: 1px solid rgba(99, 102, 241, 0.15);
+                transition: background 0.2s ease;
+            `;
+            summary.onmouseenter = () => summary.style.background = 'linear-gradient(90deg, rgba(255,255,255,0.95) 0%, rgba(238,242,255,0.8) 100%)';
+            summary.onmouseleave = () => summary.style.background = 'linear-gradient(90deg, rgba(255,255,255,0.8) 0%, rgba(238,242,255,0.6) 100%)';
+            details.appendChild(summary);
+            const content = document.createElement('div');
+            content.style.cssText = 'padding: 24px;';
+            const profileCard = document.createElement('div');
+            profileCard.style.cssText = `
+                background: white;
+                border-radius: 12px;
+                padding: 20px;
+                box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+                margin-bottom: 20px;
+            `;
+            const profileHeader = document.createElement('div');
+            profileHeader.style.cssText = 'display:flex; align-items:center; gap:10px; margin-bottom:16px;';
+            profileHeader.innerHTML = `
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#6366f1" stroke-width="2">
+                    <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+                </svg>
+                <h4 style="margin:0; color:#374151; font-size:15px; font-weight:600;">本地配置档案</h4>
+            `;
+            profileCard.appendChild(profileHeader);
+            const profileControls = document.createElement('div');
+            profileControls.style.cssText = 'display:flex; gap:10px; align-items:center; flex-wrap:wrap;';
+            const profileSelectWrapper = document.createElement('div');
+            profileSelectWrapper.style.cssText = `
+                position: relative;
+                flex-grow: 1;
+                min-width: 200px;
+            `;
+            const profileSelectTrigger = document.createElement('div');
+            profileSelectTrigger.style.cssText = `
+                padding: 12px 16px;
+                border-radius: 10px;
+                border: 1px solid #e5e7eb;
+                background: linear-gradient(to bottom, #fff, #fafafa);
+                color: #374151;
+                cursor: pointer;
+                transition: all 0.2s ease;
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                font-size: 14px;
+                user-select: none;
+            `;
+            profileSelectTrigger.innerHTML = `
+                <span class="profile-select-text" style="display:flex; align-items:center; gap:8px;">
+                    <span style="font-size:16px;">📁</span>
+                    <span>选择配置档案...</span>
+                </span>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#6b7280" stroke-width="2" style="transition: transform 0.2s;">
+                    <polyline points="6 9 12 15 18 9"></polyline>
+                </svg>
+            `;
+            const profileDropdown = document.createElement('div');
+            profileDropdown.style.cssText = `
+                position: absolute;
+                top: calc(100% + 4px);
+                left: 0;
+                right: 0;
+                background: white;
+                border: 1px solid #e5e7eb;
+                border-radius: 10px;
+                box-shadow: 0 10px 25px rgba(0,0,0,0.15);
+                max-height: 220px;
+                overflow-y: auto;
+                z-index: 1000;
+                display: none;
+                padding: 6px;
+            `;
+            let selectedProfileName = '';
+            const refreshProfiles = () => {
+                const profiles = ProfileHelper.getProfiles();
+                profileDropdown.innerHTML = '';
+                if (profiles.length === 0) {
+                    const emptyMsg = document.createElement('div');
+                    emptyMsg.style.cssText = 'padding: 16px; text-align: center; color: #9ca3af; font-size: 13px;';
+                    emptyMsg.innerHTML = '📭 暂无保存的配置档案';
+                    profileDropdown.appendChild(emptyMsg);
+                } else {
+                    profiles.forEach(p => {
+                        const item = document.createElement('div');
+                        item.style.cssText = `
+                            padding: 10px 14px;
+                            border-radius: 8px;
+                            cursor: pointer;
+                            transition: all 0.15s ease;
+                            display: flex;
+                            align-items: center;
+                            gap: 10px;
+                        `;
+                        item.innerHTML = `
+                            <span style="font-size:16px;">📄</span>
+                            <div style="flex:1; min-width:0;">
+                                <div style="font-weight:500; color:#374151; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${p.name}</div>
+                                <div style="font-size:11px; color:#9ca3af;">${new Date(p.timestamp).toLocaleString()}</div>
+                            </div>
+                            <div class="delete-profile-btn" style="
+                                width: 24px; height: 24px; border-radius: 6px;
+                                display: flex; align-items: center; justify-content: center;
+                                color: #9ca3af; transition: all 0.2s; visibility: hidden;
+                            ">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                                </svg>
+                            </div>
+                        `;
+                        item.onmouseenter = () => {
+                            item.style.background = '#f3f4f6';
+                            const del = item.querySelector('.delete-profile-btn');
+                            del.style.visibility = 'visible';
+                            del.style.color = '#ef4444';
+                            del.style.background = '#fee2e2';
+                        };
+                        item.onmouseleave = () => {
+                            item.style.background = 'transparent';
+                            const del = item.querySelector('.delete-profile-btn');
+                            del.style.visibility = 'hidden';
+                            del.style.color = '#9ca3af';
+                            del.style.background = 'transparent';
+                        };
+                        item.onclick = async (e) => {
+                            if (e.target.closest('.delete-profile-btn')) {
+                                e.stopPropagation();
+                                const confirmed = await showConfirmNotification(
+                                    `确定要删除配置 "${p.name}" 吗？此操作不可撤销。`,
+                                    {
+                                        title: '删除确认',
+                                        confirmText: '删除',
+                                        cancelText: '取消',
+                                        animation: 'fadeSlide'
+                                    }
+                                );
+                                if (confirmed) {
+                                    ProfileHelper.deleteProfile(p.name);
+                                    if (selectedProfileName === p.name) {
+                                        selectedProfileName = '';
+                                        profileSelectTrigger.querySelector('.profile-select-text').innerHTML = `
+                                            <span style="font-size:16px;">📁</span>
+                                            <span>选择配置档案...</span>
+                                        `;
+                                    }
+                                    refreshProfiles();
+                                    showNotification(`🗑️ 已删除配置: ${p.name}`, { type: 'info' });
+                                }
+                                return;
+                            }
+                            selectedProfileName = p.name;
+                            profileSelectTrigger.querySelector('.profile-select-text').innerHTML = `
+                                <span style="font-size:16px;">📄</span>
+                                <span>${p.name}</span>
+                            `;
+                            profileDropdown.style.display = 'none';
+                            profileSelectTrigger.querySelector('svg').style.transform = 'rotate(0deg)';
+                        };
+                        profileDropdown.appendChild(item);
+                    });
+                }
+            };
+            refreshProfiles();
+            profileSelectTrigger.onclick = (e) => {
+                e.stopPropagation();
+                const isOpen = profileDropdown.style.display === 'block';
+                profileDropdown.style.display = isOpen ? 'none' : 'block';
+                profileSelectTrigger.querySelector('svg').style.transform = isOpen ? 'rotate(0deg)' : 'rotate(180deg)';
+                profileSelectTrigger.style.borderColor = isOpen ? '#e5e7eb' : '#6366f1';
+                profileSelectTrigger.style.boxShadow = isOpen ? 'none' : '0 0 0 3px rgba(99,102,241,0.1)';
+            };
+            document.addEventListener('click', () => {
+                profileDropdown.style.display = 'none';
+                profileSelectTrigger.querySelector('svg').style.transform = 'rotate(0deg)';
+                profileSelectTrigger.style.borderColor = '#e5e7eb';
+                profileSelectTrigger.style.boxShadow = 'none';
+            });
+            profileSelectWrapper.append(profileSelectTrigger, profileDropdown);
+            const showProfileNameInput = (callback) => {
+                const inputOverlay = document.createElement('div');
+                inputOverlay.style.cssText = `
+                    position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+                    background: rgba(0, 0, 0, 0.5); z-index: 10003; display: flex;
+                    align-items: center; justify-content: center; backdrop-filter: blur(4px);
+                    opacity: 0; transition: opacity 0.2s ease;
+                `;
+                const inputModal = document.createElement('div');
+                inputModal.style.cssText = `
+                    background: white; padding: 28px; border-radius: 16px;
+                    width: 400px; max-width: 90%; box-shadow: 0 20px 50px rgba(0,0,0,0.2);
+                    transform: scale(0.9); transition: transform 0.2s ease;
+                `;
+                inputModal.innerHTML = `
+                    <div style="display:flex; align-items:center; gap:12px; margin-bottom:20px;">
+                        <div style="width:44px; height:44px; background:linear-gradient(135deg, #6366f1, #8b5cf6); border-radius:12px; display:flex; align-items:center; justify-content:center;">
+                            <span style="font-size:22px;">💾</span>
+                        </div>
+                        <div>
+                            <h3 style="margin:0; color:#1f2937; font-size:18px;">保存配置档案</h3>
+                            <p style="margin:4px 0 0 0; color:#6b7280; font-size:13px;">为当前配置起一个名称</p>
+                        </div>
+                    </div>
+                `;
+                const nameInput = document.createElement('input');
+                nameInput.type = 'text';
+                nameInput.placeholder = '请输入配置档案名称...';
+                nameInput.style.cssText = `
+                    width: 100%; padding: 14px 16px; border: 2px solid #e5e7eb; border-radius: 10px;
+                    font-size: 15px; margin-bottom: 20px; box-sizing: border-box; outline: none;
+                    transition: all 0.2s ease;
+                `;
+                nameInput.onfocus = () => { nameInput.style.borderColor = '#6366f1'; nameInput.style.boxShadow = '0 0 0 4px rgba(99,102,241,0.1)'; };
+                nameInput.onblur = () => { nameInput.style.borderColor = '#e5e7eb'; nameInput.style.boxShadow = 'none'; };
+                const btnRow = document.createElement('div');
+                btnRow.style.cssText = 'display:flex; gap:12px; justify-content:flex-end;';
+                const cancelBtn = document.createElement('button');
+                cancelBtn.textContent = '取消';
+                cancelBtn.style.cssText = `
+                    padding: 10px 20px; border-radius: 8px; border: 1px solid #d1d5db;
+                    background: white; color: #374151; cursor: pointer; font-size: 14px; font-weight: 500;
+                    transition: all 0.2s ease;
+                `;
+                cancelBtn.onmouseenter = () => cancelBtn.style.background = '#f3f4f6';
+                cancelBtn.onmouseleave = () => cancelBtn.style.background = 'white';
+                const confirmBtn = document.createElement('button');
+                confirmBtn.textContent = '保存';
+                confirmBtn.style.cssText = `
+                    padding: 10px 24px; border-radius: 8px; border: none;
+                    background: linear-gradient(135deg, #6366f1, #8b5cf6); color: white;
+                    cursor: pointer; font-size: 14px; font-weight: 600;
+                    transition: all 0.2s ease; box-shadow: 0 4px 12px rgba(99,102,241,0.3);
+                `;
+                confirmBtn.onmouseenter = () => { confirmBtn.style.transform = 'translateY(-1px)'; confirmBtn.style.boxShadow = '0 6px 16px rgba(99,102,241,0.4)'; };
+                confirmBtn.onmouseleave = () => { confirmBtn.style.transform = 'translateY(0)'; confirmBtn.style.boxShadow = '0 4px 12px rgba(99,102,241,0.3)'; };
+                const closeModal = () => {
+                    inputOverlay.style.opacity = '0';
+                    inputModal.style.transform = 'scale(0.9)';
+                    setTimeout(() => inputOverlay.remove(), 200);
+                };
+                cancelBtn.onclick = closeModal;
+                inputOverlay.onclick = (e) => { if (e.target === inputOverlay) closeModal(); };
+                confirmBtn.onclick = () => {
+                    const name = nameInput.value.trim();
+                    if (!name) {
+                        nameInput.style.borderColor = '#ef4444';
+                        nameInput.style.boxShadow = '0 0 0 4px rgba(239,68,68,0.1)';
+                        showNotification('请输入配置档案名称', { type: 'warning' });
+                        return;
+                    }
+                    closeModal();
+                    callback(name);
+                };
+                nameInput.onkeydown = (e) => { if (e.key === 'Enter') confirmBtn.click(); if (e.key === 'Escape') closeModal(); };
+                btnRow.append(cancelBtn, confirmBtn);
+                inputModal.append(nameInput, btnRow);
+                inputOverlay.appendChild(inputModal);
+                document.body.appendChild(inputOverlay);
+                requestAnimationFrame(() => {
+                    inputOverlay.style.opacity = '1';
+                    inputModal.style.transform = 'scale(1)';
+                    nameInput.focus();
+                });
+            };
+            const createProfileBtn = (text, icon, color, hoverColor) => {
+                const btn = document.createElement('button');
+                btn.innerHTML = `<span style="margin-right:6px;">${icon}</span>${text}`;
+                btn.style.cssText = `
+                    padding: 10px 16px;
+                    border-radius: 10px;
+                    border: none;
+                    background: ${color};
+                    color: white;
+                    cursor: pointer;
+                    font-size: 13px;
+                    font-weight: 500;
+                    display: flex;
+                    align-items: center;
+                    transition: all 0.25s ease;
+                    box-shadow: 0 2px 6px ${color}40;
+                `;
+                btn.onmouseenter = () => { btn.style.background = hoverColor; btn.style.transform = 'translateY(-2px)'; btn.style.boxShadow = `0 4px 12px ${color}50`; };
+                btn.onmouseleave = () => { btn.style.background = color; btn.style.transform = 'translateY(0)'; btn.style.boxShadow = `0 2px 6px ${color}40`; };
+                return btn;
+            };
+            const btnLoad = createProfileBtn('读取', '📥', '#10b981', '#059669');
+            btnLoad.onclick = (e) => {
+                e.preventDefault();
+                if (!selectedProfileName) { showNotification('请先选择一个配置档案', { type: 'warning' }); return; }
+                const profiles = ProfileHelper.getProfiles();
+                const p = profiles.find(x => x.name === selectedProfileName);
+                if (p) {
+                    localStorage.setItem('aiConfig', JSON.stringify(p.config));
+                    if (p.config.customPrompts) {
+                        localStorage.setItem('aiCustomPrompts', JSON.stringify(p.config.customPrompts));
+                    }
+                    showNotification(`✅ 已加载配置: ${selectedProfileName}，正在刷新面板...`, { type: 'success' });
+                    const mainOverlay = document.querySelector('div[style*="z-index: 10001"]');
+                    if (mainOverlay) {
+                        mainOverlay.remove();
+                    }
+                    setTimeout(() => {
+                        showAISettingsPanel();
+                    }, 150);
+                }
+            };
+            const btnSaveAs = createProfileBtn('保存', '💾', '#6366f1', '#4f46e5');
+            btnSaveAs.onclick = (e) => {
+                e.preventDefault();
+                showProfileNameInput((name) => {
+                    const config = getFormConfig();
+                    ProfileHelper.addProfile(name, config);
+                    refreshProfiles();
+                    selectedProfileName = name;
+                    profileSelectTrigger.querySelector('.profile-select-text').innerHTML = `
+                        <span style="font-size:16px;">📄</span>
+                        <span>${name}</span>
+                    `;
+                    showNotification(`✅ 已保存配置: ${name}`, { type: 'success' });
+                });
+            };
+            const showSelectionModal = (title, items, actionType, callback) => {
+                const overlay = document.createElement('div');
+                overlay.style.cssText = `
+                    position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+                    background: rgba(0, 0, 0, 0.5); z-index: 10005; display: flex;
+                    align-items: center; justify-content: center; backdrop-filter: blur(4px);
+                    opacity: 0; transition: opacity 0.2s ease;
+                `;
+                const modal = document.createElement('div');
+                modal.style.cssText = `
+                    background: white; padding: 0; border-radius: 16px;
+                    width: 420px; max-width: 90%; max-height: 80vh; display: flex; flex-direction: column;
+                    box-shadow: 0 20px 50px rgba(0,0,0,0.2); overflow: hidden;
+                    transform: scale(0.95); transition: transform 0.2s ease;
+                `;
+                const header = document.createElement('div');
+                header.style.cssText = 'padding: 20px; border-bottom: 1px solid #e5e7eb; background: #f9fafb;';
+                header.innerHTML = `
+                    <h3 style="margin:0; color:#111827; font-size:17px; display:flex; align-items:center; gap:8px;">
+                        <span>${actionType === 'upload' ? '☁️' : actionType === 'delete' ? '🗑️' : '⬇️'}</span> ${title}
+                    </h3>
+                    <p style="margin:4px 0 0 0; color:#6b7280; font-size:13px;">请勾选需要操作的配置档案</p>
+                `;
+                const listContainer = document.createElement('div');
+                listContainer.style.cssText = 'padding: 10px; overflow-y: auto; flex-grow: 1;';
+                if (items.length === 0) {
+                    listContainer.innerHTML = '<div style="padding:30px; text-align:center; color:#9ca3af;">暂无可用配置</div>';
+                }
+                const checkboxes = [];
+                items.forEach(item => {
+                    const row = document.createElement('label');
+                    row.style.cssText = `
+                        display: flex; align-items: center; gap: 12px; padding: 12px;
+                        border-radius: 8px; cursor: pointer; transition: background 0.15s;
+                        margin-bottom: 4px;
+                    `;
+                    row.onmouseenter = () => row.style.background = '#f3f4f6';
+                    row.onmouseleave = () => row.style.background = 'transparent';
+                    const cb = document.createElement('input');
+                    cb.type = 'checkbox';
+                    cb.checked = false;
+                    cb.value = item.name;
+                    cb.style.cssText = 'width: 18px; height: 18px; cursor: pointer; accent-color: #6366f1;';
+                    const info = document.createElement('div');
+                    info.style.cssText = 'flex: 1; overflow: hidden;';
+                    info.innerHTML = `
+                        <div style="font-weight:500; color:#374151;">${item.name}</div>
+                        <div style="font-size:12px; color:#9ca3af;">${new Date(item.timestamp).toLocaleString()}</div>
+                    `;
+                    row.append(cb, info);
+                    listContainer.appendChild(row);
+                    checkboxes.push(cb);
+                });
+                const footer = document.createElement('div');
+                footer.style.cssText = 'padding: 16px 20px; border-top: 1px solid #e5e7eb; display: flex; justify-content: space-between; align-items: center; background: #fff;';
+                const leftActions = document.createElement('div');
+                const toggleAll = document.createElement('span');
+                toggleAll.textContent = '全选';
+                toggleAll.style.cssText = 'font-size:13px; color:#6366f1; cursor:pointer; font-weight:500;';
+                toggleAll.onclick = () => {
+                    const allChecked = checkboxes.every(c => c.checked);
+                    checkboxes.forEach(c => c.checked = !allChecked);
+                };
+                leftActions.appendChild(toggleAll);
+                const btnGroup = document.createElement('div');
+                btnGroup.style.cssText = 'display:flex; gap:10px;';
+                const btnCancel = document.createElement('button');
+                btnCancel.textContent = '取消';
+                btnCancel.style.cssText = 'padding: 8px 16px; border-radius: 8px; border: 1px solid #d1d5db; background: white; color: #374151; cursor: pointer; font-size: 14px;';
+                const btnConfirm = document.createElement('button');
+                btnConfirm.textContent = actionType === 'upload' ? '开始备份' :
+                    actionType === 'delete' ? '删除选中' : '开始恢复';
+                btnConfirm.style.cssText = `
+                    padding: 8px 20px; border-radius: 8px; border: none;
+                    background: ${actionType === 'upload' ? 'linear-gradient(135deg, #6366f1, #8b5cf6)' :
+                        actionType === 'delete' ? 'linear-gradient(135deg, #ef4444, #f87171)' : 'linear-gradient(135deg, #10b981, #14b8a6)'};
+                    color: white; cursor: pointer; font-size: 14px; font-weight: 600;
+                    box-shadow: 0 4px 12px ${actionType === 'upload' ? 'rgba(99,102,241,0.3)' :
+                        actionType === 'delete' ? 'rgba(239,68,68,0.3)' : 'rgba(16,185,129,0.3)'};
+                `;
+                const close = () => {
+                    overlay.style.opacity = '0';
+                    modal.style.transform = 'scale(0.95)';
+                    setTimeout(() => overlay.remove(), 200);
+                };
+                btnCancel.onclick = close;
+                overlay.onclick = (e) => { if (e.target === overlay) close(); };
+                btnConfirm.onclick = () => {
+                    const selected = checkboxes.filter(c => c.checked).map(c => c.value);
+                    if (selected.length === 0) {
+                        showNotification('请至少选择一个配置', { type: 'warning' });
+                        return;
+                    }
+                    close();
+                    callback(selected);
+                };
+                btnGroup.append(btnCancel, btnConfirm);
+                footer.append(leftActions, btnGroup);
+                modal.append(header, listContainer, footer);
+                overlay.appendChild(modal);
+                document.body.appendChild(overlay);
+                requestAnimationFrame(() => {
+                    overlay.style.opacity = '1';
+                    modal.style.transform = 'scale(1)';
+                });
+            };
+            profileControls.append(profileSelectWrapper, btnLoad, btnSaveAs);
+            profileCard.appendChild(profileControls);
+            content.appendChild(profileCard);
+            const davCard = document.createElement('div');
+            davCard.style.cssText = `
+                background: white;
+                border-radius: 12px;
+                padding: 20px;
+                box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+            `;
+            const davHeader = document.createElement('div');
+            davHeader.style.cssText = 'display:flex; align-items:center; gap:10px; margin-bottom:16px;';
+            davHeader.innerHTML = `
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#6366f1" stroke-width="2">
+                    <path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"></path>
+                </svg>
+                <h4 style="margin:0; color:#374151; font-size:15px; font-weight:600;">WebDAV 云同步</h4>
+                <span style="font-size:11px; background:#e0e7ff; color:#4338ca; padding:3px 8px; border-radius:20px; margin-left:auto;">跨设备同步</span>
+            `;
+            davCard.appendChild(davHeader);
+            const davConfig = JSON.parse(localStorage.getItem('xiaoya_webdav_config') || '{}');
+            const createInput = (placeholder, key, type = 'text', icon = '🔗') => {
+                const wrapper = document.createElement('div');
+                wrapper.style.cssText = 'position:relative; margin-bottom:12px;';
+                const iconSpan = document.createElement('span');
+                iconSpan.textContent = icon;
+                iconSpan.style.cssText = 'position:absolute; left:12px; top:50%; transform:translateY(-50%); font-size:14px; z-index: 10; pointer-events: none;';
+                const inp = document.createElement('input');
+                inp.type = type;
+                inp.placeholder = placeholder;
+                inp.value = davConfig[key] || '';
+                inp.style.cssText = `
+                    display: block;
+                    width: 100%;
+                    padding: 12px 14px 12px 38px;
+                    border: 1px solid #e5e7eb;
+                    border-radius: 10px;
+                    box-sizing: border-box;
+                    font-size: 14px;
+                    background: #fafafa;
+                    transition: all 0.2s ease;
+                    outline: none;
+                `;
+                inp.onfocus = () => { inp.style.borderColor = '#6366f1'; inp.style.boxShadow = '0 0 0 3px rgba(99,102,241,0.1)'; inp.style.background = '#fff'; };
+                inp.onblur = () => { inp.style.borderColor = '#e5e7eb'; inp.style.boxShadow = 'none'; inp.style.background = '#fafafa'; };
+                inp.onchange = () => {
+                    davConfig[key] = inp.value;
+                    localStorage.setItem('xiaoya_webdav_config', JSON.stringify(davConfig));
+                };
+                wrapper.append(inp, iconSpan);
+                return wrapper;
+            };
+            davCard.append(
+                createInput('WebDAV 地址 (例: https://dav.jianguoyun.com/dav/)', 'url', 'text', '🌐'),
+                createInput('用户名', 'user', 'text', '👤'),
+                createInput('密码 / 应用专用密码', 'pass', 'password', '🔑')
+            );
+            const helpLink = document.createElement('div');
+            helpLink.style.cssText = 'text-align:right; margin-top:-8px; margin-bottom:16px;';
+            helpLink.innerHTML = '<span style="color:#6366f1; cursor:pointer; font-size:13px; text-decoration:underline;">❓ 如何获取坚果云配置？</span>';
+            helpLink.onclick = () => {
+                showConfirmNotification(
+                    `<div style="text-align:left; font-size:14px; line-height:1.6;">
+                        <p><b>1. 登录坚果云官网：</b><br>访问 <a href="https://www.jianguoyun.com" target="_blank" style="color:#6366f1;">jianguoyun.com</a> 并登录。</p>
+                        <p><b>2. 进入安全选项：</b><br>点击右上角昵称 -> 账户信息 -> 安全选项。<br>
+                        <span style="color:#f59e0b; font-size:12px;">(如果提示需要下载客户端关联，请点击右上角切换版本到旧版界面)</span></p>
+                        <p><b>3. 生成应用密码：</b><br>在"第三方应用管理"处，点击"添加应用"，填写名称，生成密码。</p>
+                        <p><b>4. 填写配置：</b><br>
+                        • <b>地址：</b> <code>https://dav.jianguoyun.com/dav/</code><br>
+                        • <b>用户名：</b> 你的坚果云注册邮箱<br>
+                        • <b>密码：</b> 刚才生成的用来代替登录密码的"应用密码"</p>
+                        <p style="color:#ef4444; font-size:12px; margin-top:8px;">⚠️ 注意：为了安全，请务必使用应用专用密码，不要使用你的登录密码！</p>
+                    </div>`,
+                    { title: '坚果云 WebDAV 配置教程', confirmText: '我知道了', excludeCancel: true }
+                );
+            };
+            davCard.appendChild(helpLink);
+            const davActions = document.createElement('div');
+            davActions.style.cssText = 'display:flex; gap:12px; margin-top:16px;';
+            const createDavBtn = (text, icon, gradient, hoverGradient) => {
+                const btn = document.createElement('button');
+                btn.innerHTML = `<span style="font-size:18px; margin-right:8px;">${icon}</span>${text}`;
+                btn.style.cssText = `
+                    flex: 1;
+                    padding: 14px 20px;
+                    border-radius: 12px;
+                    border: none;
+                    background: ${gradient};
+                    color: white;
+                    cursor: pointer;
+                    font-size: 14px;
+                    font-weight: 600;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    transition: all 0.3s ease;
+                    box-shadow: 0 4px 15px rgba(79, 70, 229, 0.25);
+                `;
+                btn.onmouseenter = () => { btn.style.background = hoverGradient; btn.style.transform = 'translateY(-2px)'; btn.style.boxShadow = '0 6px 20px rgba(79, 70, 229, 0.35)'; };
+                btn.onmouseleave = () => { btn.style.background = gradient; btn.style.transform = 'translateY(0)'; btn.style.boxShadow = '0 4px 15px rgba(79, 70, 229, 0.25)'; };
+                return btn;
+            };
+            const btnBackup = createDavBtn('上传备份', '☁️', 'linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)', 'linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%)');
+            btnBackup.onclick = async (e) => {
+                e.preventDefault();
+                if (!davConfig.url || !davConfig.user || !davConfig.pass) {
+                    showNotification('⚠️ 请先填写完整的 WebDAV 连接信息', { type: 'warning' });
+                    return;
+                }
+                let localProfiles = ProfileHelper.getProfiles();
+                if (localProfiles.length === 0) {
+                    if (await showConfirmNotification(
+                        '当前没有保存任何档案。是否将当前界面配置保存为 "自动备份" 后继续？',
+                        {
+                            title: '自动保存',
+                            confirmText: '保存并继续',
+                            cancelText: '取消',
+                            animation: 'fadeSlide'
+                        }
+                    )) {
+                        ProfileHelper.addProfile('自动备份', getFormConfig());
+                        refreshProfiles();
+                        localProfiles = ProfileHelper.getProfiles();
+                    } else {
+                        return;
+                    }
+                }
+                showSelectionModal('选择要备份的配置', localProfiles, 'upload', async (selectedNames) => {
+                    const client = new WebDavClient(davConfig.url, davConfig.user, davConfig.pass);
+                    btnBackup.disabled = true;
+                    const originalHtml = btnBackup.innerHTML;
+                    btnBackup.innerHTML = '<span style="animation: spin 1s linear infinite; display:inline-block;">⏳</span> 连接中...';
+                    try {
+                        if (await client.verify()) {
+                            const backupDir = 'XiaoyaBackup/';
+                            await client.mkcol(backupDir);
+                            btnBackup.innerHTML = '<span style="animation: spin 1s linear infinite; display:inline-block;">⏳</span> 同步中...';
+                            const remoteFile = backupDir + 'xiaoya_ai_profiles.json';
+                            let remoteProfiles = [];
+                            try {
+                                const text = await client.get(remoteFile);
+                                if (text) remoteProfiles = JSON.parse(text);
+                            } catch (e) { }
+                            const profilesToUpload = localProfiles.filter(p => selectedNames.includes(p.name));
+                            let count = 0;
+                            profilesToUpload.forEach(localP => {
+                                const idx = remoteProfiles.findIndex(rp => rp.name === localP.name);
+                                if (idx !== -1) {
+                                    remoteProfiles[idx] = localP;
+                                } else {
+                                    remoteProfiles.push(localP);
+                                }
+                                count++;
+                            });
+                            await client.put(remoteFile, JSON.stringify(remoteProfiles));
+                            showNotification(`✅ 成功备份了 ${count} 个配置到 ${backupDir}`, { type: 'success' });
+                        } else {
+                            showNotification('❌ WebDAV 连接失败，请检查地址和凭据', { type: 'error' });
+                        }
+                    } catch (err) {
+                        showNotification('❌ 备份出错: ' + err.message, { type: 'error' });
+                    } finally {
+                        btnBackup.disabled = false;
+                        btnBackup.innerHTML = originalHtml;
+                    }
+                });
+            };
+            const btnRestore = createDavBtn('下载恢复', '⬇️', 'linear-gradient(135deg, #10b981 0%, #14b8a6 100%)', 'linear-gradient(135deg, #059669 0%, #0d9488 100%)');
+            btnRestore.onclick = async (e) => {
+                e.preventDefault();
+                if (!davConfig.url || !davConfig.user || !davConfig.pass) {
+                    showNotification('⚠️ 请先填写完整的 WebDAV 连接信息', { type: 'warning' });
+                    return;
+                }
+                const client = new WebDavClient(davConfig.url, davConfig.user, davConfig.pass);
+                btnRestore.disabled = true;
+                const originalHtml = btnRestore.innerHTML;
+                btnRestore.innerHTML = '<span style="animation: spin 1s linear infinite; display:inline-block;">⏳</span> 读取中...';
+                try {
+                    const backupDir = 'XiaoyaBackup/';
+                    const remoteFile = backupDir + 'xiaoya_ai_profiles.json';
+                    let text = await client.get(remoteFile);
+                    if (!text) {
+                        text = await client.get('xiaoya_ai_profiles.json');
+                    }
+                    if (text) {
+                        const remoteProfiles = JSON.parse(text);
+                        btnRestore.innerHTML = originalHtml;
+                        btnRestore.disabled = false;
+                        showSelectionModal('选择要恢复的配置', remoteProfiles, 'download', (selectedNames) => {
+                            const profilesToImport = remoteProfiles.filter(p => selectedNames.includes(p.name));
+                            if (profilesToImport.length > 0) {
+                                ProfileHelper.saveProfiles(profilesToImport);
+                                profilesToImport.forEach(imp => {
+                                    ProfileHelper.addProfile(imp.name, imp.config);
+                                });
+                                refreshProfiles();
+                                showNotification(`✅ 成功恢复/合并了 ${profilesToImport.length} 个配置档案`, { type: 'success' });
+                            }
+                        });
+                        return;
+                    } else {
+                        showNotification('☁️ 云端未找到备份文件', { type: 'warning' });
+                    }
+                } catch (err) {
+                    showNotification('❌ 获取备份列表出错: ' + err.message, { type: 'error' });
+                } finally {
+                    if (btnRestore.disabled) {
+                        btnRestore.disabled = false;
+                        btnRestore.innerHTML = originalHtml;
+                    }
+                }
+            };
+            const btnManage = createDavBtn('管理云端', '⚙️', 'linear-gradient(135deg, #f59e0b 0%, #fbbf24 100%)', 'linear-gradient(135deg, #d97706 0%, #f59e0b 100%)');
+            btnManage.onclick = async (e) => {
+                e.preventDefault();
+                if (!davConfig.url || !davConfig.user || !davConfig.pass) {
+                    showNotification('⚠️ 请先填写完整的 WebDAV 连接信息', { type: 'warning' });
+                    return;
+                }
+                const client = new WebDavClient(davConfig.url, davConfig.user, davConfig.pass);
+                btnManage.disabled = true;
+                const originalHtml = btnManage.innerHTML;
+                btnManage.innerHTML = '<span style="animation: spin 1s linear infinite; display:inline-block;">⏳</span> 加载中...';
+                try {
+                    const backupDir = 'XiaoyaBackup/';
+                    const remoteFile = backupDir + 'xiaoya_ai_profiles.json';
+                    let text = await client.get(remoteFile);
+                    if (!text) text = await client.get('xiaoya_ai_profiles.json');
+                    if (text) {
+                        let remoteProfiles = JSON.parse(text);
+                        btnManage.innerHTML = originalHtml;
+                        btnManage.disabled = false;
+                        showSelectionModal('管理云端配置 (选择删除)', remoteProfiles, 'delete', async (selectedNames) => {
+                            if (await showConfirmNotification(`确定要永久删除选中的 ${selectedNames.length} 个云端备份吗？`, { title: '删除警告', confirmText: '确定删除', cancelText: '取消', animation: 'fadeSlide' })) {
+                                btnManage.disabled = true;
+                                btnManage.innerHTML = '<span style="animation: spin 1s linear infinite; display:inline-block;">⏳</span> 删除中...';
+                                try {
+                                    const newProfiles = remoteProfiles.filter(p => !selectedNames.includes(p.name));
+                                    await client.put(remoteFile, JSON.stringify(newProfiles));
+                                    showNotification(`🗑️ 已从云端删除 ${selectedNames.length} 个配置`, { type: 'success' });
+                                } catch (err) {
+                                    showNotification('❌ 删除失败: ' + err.message, { type: 'error' });
+                                } finally {
+                                    btnManage.disabled = false;
+                                    btnManage.innerHTML = originalHtml;
+                                }
+                            }
+                        });
+                        return;
+                    } else {
+                        showNotification('☁️ 云端暂无配置文件', { type: 'info' });
+                    }
+                } catch (err) {
+                    showNotification('❌ 获取列表失败: ' + err.message, { type: 'error' });
+                } finally {
+                    if (btnManage.disabled) {
+                        btnManage.disabled = false;
+                        btnManage.innerHTML = originalHtml;
+                    }
+                }
+            };
+            davActions.append(btnBackup, btnRestore, btnManage);
+            davCard.appendChild(davActions);
+            content.appendChild(davCard);
+            details.appendChild(content);
+            return details;
+        }
         function createCustomSelect(field, initialValue, onValueChange) {
             const wrapper = document.createElement('div');
             wrapper.className = 'custom-select-wrapper';
@@ -13619,7 +14531,7 @@
                 options: [
                     { value: 'default', text: '默认 - 小雅 AI (无需配置)', domain: 'www.ai-augmented.com' },
                     { value: 'openai', text: 'OpenAI / 兼容 OpenAI 接口', domain: 'openai.com' },
-                    { value: 'gemini', text: 'Google Gemini', domain: 'gemini.google.com' },
+                    { value: 'gemini', text: 'Google Gemini', domain: 'google.com' },
                     { value: 'anthropic', text: 'Anthropic Claude', domain: 'anthropic.com' },
                     { value: 'azure', text: 'Azure OpenAI', domain: 'ai.azure.com' }
                 ],
@@ -13717,7 +14629,7 @@
                 options: [
                     { value: 'main_model', text: '使用主 AI 模型的视觉能力 (默认)', domain: null },
                     { value: 'openai', text: 'OpenAI / 兼容接口', domain: 'openai.com' },
-                    { value: 'gemini', text: 'Google Gemini', domain: 'gemini.google.com' },
+                    { value: 'gemini', text: 'Google Gemini', domain: 'google.com' },
                     { value: 'anthropic', text: 'Anthropic Claude', domain: 'anthropic.com' },
                     { value: 'azure', text: 'Azure OpenAI', domain: 'ai.azure.com' }
                 ],
@@ -13791,7 +14703,7 @@
                 type: 'custom-select',
                 options: [
                     { value: 'openai_compatible', text: 'OpenAI Whisper / 兼容接口 (如 SiliconFlow)', domain: 'openai.com' },
-                    { value: 'gemini', text: 'Google Gemini', domain: 'gemini.google.com' },
+                    { value: 'gemini', text: 'Google Gemini', domain: 'google.com' },
                 ],
                 value: aiConfig.sttProvider || 'openai_compatible',
                 dependsOn: ['stt_is_enabled']
@@ -14605,6 +15517,7 @@
         advancedContentWrapper.appendChild(promptEditContainer);
         advancedContentWrapper.appendChild(promptEditContainer);
         form.appendChild(advancedDetails);
+        form.appendChild(createWebDavManager(inputElements));
         const urlPreviewContainer = document.createElement('div');
         urlPreviewContainer.className = 'url-preview-container';
         urlPreviewContainer.innerHTML = `
@@ -15678,8 +16591,8 @@
             if (ticket && expiry && Date.now() < parseInt(expiry)) {
                 return ticket;
             }
-            localStorage.removeItem( this.SERVICE_TICKET_KEY);
-            localStorage.removeItem( this.TICKET_EXPIRY_KEY);
+            localStorage.removeItem(this.SERVICE_TICKET_KEY);
+            localStorage.removeItem(this.TICKET_EXPIRY_KEY);
             showNotification('夸克授权已过期，请重试以重新登录。', { type: 'warning' });
             return null;
         },
@@ -16306,8 +17219,8 @@
                 });
                 if (searchData.code !== 0 || searchData.data?.extJson?.abnormal_status === 'risk_req') {
                     if (searchData.msg && (searchData.msg.includes('st fail') || searchData.msg.includes('过期') || searchData.msg.includes('未登录'))) {
-                        localStorage.removeItem( this.SERVICE_TICKET_KEY);
-                        localStorage.removeItem( this.TICKET_EXPIRY_KEY);
+                        localStorage.removeItem(this.SERVICE_TICKET_KEY);
+                        localStorage.removeItem(this.TICKET_EXPIRY_KEY);
                         showNotification('夸克授权已过期，请重试以重新登录。', { type: 'warning' });
                         return null;
                     }
