@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         小雅答答答
 // @license      MIT
-// @version      2.10.4
+// @version      2.10.4.1
 // @description  小雅平台学习助手 📖，智能整理归纳学习资料 📚，辅助完成练习 💪，并提供便捷的查阅和修改功能 📝！
 // @author       Yi
 // @match        https://*.ai-augmented.com/*
@@ -7448,10 +7448,12 @@
                 autoScrollEnabled: aiConfig.autoScrollEnabled === true
             });
             thinkingHandler.reset();
+            let isFinalized = false;
             const onUpdateTarget = (contentToAdd) => {
                 if (questionTypeNum === 4) return;
                 requestAnimationFrame(() => {
                     if (!targetElement) return;
+                    if (isFinalized) return;
                     if (questionTypeNum === 6) {
                         targetElement.appendChild(document.createTextNode(contentToAdd));
                         targetElement.scrollTop = targetElement.scrollHeight;
@@ -7465,6 +7467,7 @@
                 });
             };
             const onFinalizeTarget = (finalContent) => {
+                isFinalized = true;
                 console.log(`[AI辅助] 正在应用AI结果到题目 ${question.id}`);
                 const { answer, confidence } = parseAIResponseWithConfidence(finalContent);
                 question.ai_confidence = confidence;
@@ -16465,41 +16468,51 @@
         };
     `;
     function parseAIResponseWithConfidence(responseText) {
-        const lines = responseText.trim().split('\n');
+        let text = responseText.trim();
         let confidence = null;
-        let answer = responseText.trim();
-        let confidenceLineIndex = -1;
-        for (let i = lines.length - 1; i >= 0; i--) {
-            const trimmedLine = lines[i].trim();
-            if (trimmedLine === '' || /^```[\w]*$/.test(trimmedLine)) {
-                continue;
-            }
-            try {
-                const parsedLine = JSON.parse(trimmedLine);
-                if (parsedLine && typeof parsedLine.confidence === 'number') {
-                    const score = parsedLine.confidence;
-                    if (score >= 1 && score <= 5) {
-                        confidence = Math.round(score);
-                        confidenceLineIndex = i;
-                        break;
+        let answer = text;
+        const searchPattern = /"confidence"\s*:\s*([1-5])/g;
+        let lastMatch = null;
+        let m;
+        while ((m = searchPattern.exec(text)) !== null) {
+            lastMatch = m;
+        }
+        if (lastMatch) {
+            const score = parseInt(lastMatch[1], 10);
+            const keyStartIndex = lastMatch.index;
+            const openBraceIndex = text.lastIndexOf('{', keyStartIndex);
+            const numEndIndex = keyStartIndex + lastMatch[0].length;
+            const closeBraceIndex = text.indexOf('}', numEndIndex);
+            if (openBraceIndex !== -1 && closeBraceIndex !== -1) {
+                const afterBlock = text.substring(closeBraceIndex + 1).trim();
+                const isAtEnd = afterBlock === '' || /^```\s*$/.test(afterBlock);
+                if (isAtEnd) {
+                    confidence = score;
+                    let cutIndex = openBraceIndex;
+                    const prefix = text.substring(0, cutIndex).trimEnd();
+                    if (/```(?:json)?$/i.test(prefix)) {
+                        const lastBacktick = prefix.lastIndexOf('```');
+                        if (lastBacktick !== -1) {
+                            cutIndex = lastBacktick;
+                        }
                     }
+                    answer = text.substring(0, cutIndex).trim();
+                    return { answer, confidence };
                 }
-            } catch (e) {
-                break;
             }
         }
-        if (confidenceLineIndex !== -1) {
-            let answerEndIndex = confidenceLineIndex;
-            for (let i = confidenceLineIndex - 1; i >= 0; i--) {
-                const trimmedLine = lines[i].trim();
-                if (trimmedLine === '' || /^```$/.test(trimmedLine)) {
-                    answerEndIndex = i;
-                } else {
-                    break;
+        const codeBlockRegex = /```(?:json)?\s*(\{[\s\S]*?\})\s*```\s*$/i;
+        const match = text.match(codeBlockRegex);
+        if (match) {
+            try {
+                const parsed = JSON.parse(match[1]);
+                if (parsed && typeof parsed.confidence === 'number') {
+                    return {
+                        answer: text.replace(match[0], '').trim(),
+                        confidence: parsed.confidence
+                    };
                 }
-            }
-            answer = lines.slice(0, answerEndIndex).join('\n').trim();
-            answer = answer.replace(/\n*```\s*$/g, '').trim();
+            } catch (e) { }
         }
         return { answer, confidence };
     }
