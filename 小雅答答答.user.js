@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         小雅答答答
 // @license      MIT
-// @version      2.10.4.1
+// @version      2.10.5
 // @description  小雅平台学习助手 📖，智能整理归纳学习资料 📚，辅助完成练习 💪，并提供便捷的查阅和修改功能 📝！
 // @author       Yi
 // @match        https://*.ai-augmented.com/*
@@ -1545,7 +1545,7 @@
             .image-upload-btn:active {
                 transform: translateY(1px);
             }
-            .image-upload-btn.loading, .ai-assist-btn.loading, .quark-search-btn.loading {
+            .image-upload-btn.xiaoya-loading, .ai-assist-btn.xiaoya-loading, .quark-search-btn.xiaoya-loading {
                 background: #9ca3af;
                 cursor: not-allowed;
                 opacity: 0.8;
@@ -1553,7 +1553,7 @@
             .image-upload-btn .icon, .ai-assist-btn .icon, .quark-search-btn .icon {
                 font-size: 16px;
             }
-            .image-upload-btn.loading .icon, .ai-assist-btn.loading .icon, .quark-search-btn.loading .icon {
+            .image-upload-btn.xiaoya-loading .icon, .ai-assist-btn.xiaoya-loading .icon, .quark-search-btn.xiaoya-loading .icon {
                 animation: spin 1s linear infinite;
             }
             @keyframes spin {
@@ -2245,7 +2245,7 @@
         const setLoadingState = (loading) => {
             isLoading = loading;
             if (loading) {
-                confirmButton.innerHTML = '<span class="loading"></span>验证中...';
+                confirmButton.innerHTML = '<span class="xiaoya-loading"></span>验证中...';
                 confirmButton.style.backgroundColor = '#45a049';
                 confirmButton.disabled = true;
             } else {
@@ -2256,7 +2256,7 @@
         };
         const style = document.createElement('style');
         style.textContent = `
-            .loading {
+            .xiaoya-loading {
                 display: inline-block;
                 width: 20px;
                 height: 20px;
@@ -5298,7 +5298,7 @@
                 finalParts = [{ text: userPrompt }];
             }
             const payload = JSON.stringify({
-                contents: [{ parts: finalParts }],
+                contents: [{ role: 'user', parts: finalParts }],
                 generationConfig: generationConfig
             });
             const response = await fetch(finalEndpoint, {
@@ -7375,7 +7375,7 @@
                 aiButton.abortController = abortController;
                 registerAIController(abortController);
                 isLoading = true;
-                aiButton.className = 'ai-assist-btn loading';
+                aiButton.className = 'ai-assist-btn xiaoya-loading';
                 aiButton.innerHTML = '<span class="icon">⏳</span><span class="text">取消</span>';
                 aiButton.title = '点击取消生成';
                 try {
@@ -8451,7 +8451,7 @@
                     }
                     try {
                         imageUploadButton.disabled = true;
-                        imageUploadButton.className = 'image-upload-btn loading';
+                        imageUploadButton.className = 'image-upload-btn xiaoya-loading';
                         imageUploadButton.innerHTML = '<span class="icon">🔄</span><span class="text">上传中...</span>';
                         const imageUrl = await uploadImage(file);
                         if (imageUrl) {
