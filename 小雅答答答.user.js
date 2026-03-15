@@ -2174,7 +2174,7 @@
         subtitle.style.fontSize = '14px';
         subtitle.style.margin = '0';
         const infoMessage = document.createElement('p');
-        infoMessage.innerHTML = '关于激活码获取，请移步<a href="https://blog.zygame1314.site" target="_blank" style="color: #4CAF50; text-decoration: none;">我的主页</a>或者直接访问<a href="https://afdian.com/a/zygame1314" target="_blank" style="color: #4CAF50; text-decoration: none;">爱发电</a>';
+        infoMessage.innerHTML = '关于激活码获取，请移步<a href="https://blog.zygame1314.site" target="_blank" style="color: #4CAF50; text-decoration: none;">我的主页</a>或者直接访问<a href="https://ifdian.net/a/zygame1314" target="_blank" style="color: #4CAF50; text-decoration: none;">爱发电</a>';
         infoMessage.style.color = '#666';
         infoMessage.style.fontSize = '14px';
         infoMessage.style.margin = '10px 0 0 0';
