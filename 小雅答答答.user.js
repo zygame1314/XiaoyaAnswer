@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         小雅答答答
 // @license      MIT
-// @version      2.10.6
+// @version      2.10.7
 // @description  小雅平台学习助手 📖，智能整理归纳学习资料 📚，辅助完成练习 💪，并提供便捷的查阅和修改功能 📝！
 // @author       Yi
 // @match        https://*.ai-augmented.com/*
@@ -4118,51 +4118,78 @@
         }
         if (normalizedType === 'AUDIO' && data.data && data.data.quote_id) {
             const fileId = String(data.data.quote_id);
+            const safeFileId = escapeHtmlAttr(fileId);
             const cacheKey = `audio_url_${fileId}`;
-            let audioUrl = sessionStorage.getItem(cacheKey);
-            if (!audioUrl) {
-                audioUrl = await getAudioUrl(fileId);
-                if (audioUrl) sessionStorage.setItem(cacheKey, audioUrl);
-            }
-            if (audioUrl) {
+            const buildAudioHtml = (audioUrl) => {
                 const safeAudioUrl = escapeHtmlAttr(audioUrl);
-                const safeFileId = escapeHtmlAttr(fileId);
-                return `<div style="margin: 10px 0; padding: 12px; background-color: #f8fafc; border-radius: 12px; border: 1px solid #e2e8f0;"><audio controls preload="metadata" src="${safeAudioUrl}" style="width: 100%; outline: none;"></audio><div style="margin-top: 10px; text-align: right;"><button id="stt-only-btn-${safeFileId}" data-file-id="${safeFileId}" style="padding: 6px 12px; font-size: 13px; background-color: #4f46e5; color: white; border: none; border-radius: 8px; cursor: pointer; transition: all 0.2s ease;">🎤 仅转录音频</button></div><div id="stt-result-container-${safeFileId}" style="margin-top: 10px; display: none; background-color: #fff; padding: 12px; border-radius: 8px; border: 1px solid #e2e8f0;"></div></div>`;
+                return `<audio controls preload="metadata" src="${safeAudioUrl}" style="width: 100%; outline: none;"></audio><div style="margin-top: 10px; text-align: right;"><button id="stt-only-btn-${safeFileId}" data-file-id="${safeFileId}" style="padding: 6px 12px; font-size: 13px; background-color: #4f46e5; color: white; border: none; border-radius: 8px; cursor: pointer; transition: all 0.2s ease;">🎤 仅转录音频</button></div><div id="stt-result-container-${safeFileId}" style="margin-top: 10px; display: none; background-color: #fff; padding: 12px; border-radius: 8px; border: 1px solid #e2e8f0;"></div>`;
+            };
+            const cachedAudioUrl = sessionStorage.getItem(cacheKey);
+            if (cachedAudioUrl) {
+                return `<div style="margin: 10px 0; padding: 12px; background-color: #f8fafc; border-radius: 12px; border: 1px solid #e2e8f0;" data-audio-id="${safeFileId}">${buildAudioHtml(cachedAudioUrl)}</div>`;
             }
-            return `<div>[音频加载失败]</div>`;
+            const placeholderId = `xiaoya-audio-ph-${safeFileId}-${Date.now()}`;
+            (async () => {
+                try {
+                    const audioUrl = await getAudioUrl(fileId);
+                    if (!audioUrl) return;
+                    sessionStorage.setItem(cacheKey, audioUrl);
+                    const container = document.getElementById(placeholderId);
+                    if (container) container.innerHTML = buildAudioHtml(audioUrl);
+                } catch (e) {
+                    console.warn(`[音频] 异步加载音频 URL 失败 (fileId: ${fileId}):`, e);
+                    const container = document.getElementById(placeholderId);
+                    if (container) container.innerHTML = `<div style="color:#D32F2F;font-style:italic;">[音频加载失败]</div>`;
+                }
+            })();
+            return `<div id="${placeholderId}" data-audio-id="${safeFileId}" style="margin: 10px 0; padding: 12px; background-color: #f8fafc; border-radius: 12px; border: 1px solid #e2e8f0;"><div style="padding: 18px; text-align: center; color: #4b5569; font-size: 13px;">🎧 正在加载音频...</div></div>`;
         }
         if (normalizedType === 'VIDEO' && data.data && data.data.video_id) {
             const videoId = String(data.data.video_id);
+            const safeVideoId = escapeHtmlAttr(videoId);
             const cacheKey = `video_urls_${videoId}`;
-            let urls = null;
+            let cachedUrls = null;
             try {
-                urls = JSON.parse(sessionStorage.getItem(cacheKey) || 'null');
+                cachedUrls = JSON.parse(sessionStorage.getItem(cacheKey) || 'null');
             } catch (error) {
-                urls = null;
+                cachedUrls = null;
             }
-            if (!urls) {
-                urls = await getVideoUrl(videoId);
-                if (urls && urls.videoUrl) {
-                    sessionStorage.setItem(cacheKey, JSON.stringify(urls));
-                }
-            }
-            if (urls && urls.videoUrl) {
-                const safeVideoUrl = escapeHtmlAttr(urls.videoUrl);
-                const safeVideoId = escapeHtmlAttr(videoId);
-                let videoHtml = `<div style="margin: 10px 0; padding: 12px; background-color: #f8fafc; border-radius: 12px; border: 1px solid #e2e8f0;">
-                    <video controls preload="metadata" src="${safeVideoUrl}" style="width: 100%; max-height: 400px; border-radius: 8px; outline: none;"></video>`;
-                if (aiConfig.sttEnabled && aiConfig.sttVideoEnabled) {
-                    videoHtml += `<div style="margin-top: 10px; text-align: right;">
+            const sttEnabled = aiConfig.sttEnabled && aiConfig.sttVideoEnabled;
+            const buildVideoHtml = (videoUrl) => {
+                const safeVideoUrl = escapeHtmlAttr(videoUrl);
+                let html = `<video controls preload="metadata" src="${safeVideoUrl}" style="width: 100%; max-height: 400px; border-radius: 8px; outline: none;"></video>`;
+                if (sttEnabled) {
+                    html += `<div style="margin-top: 10px; text-align: right;">
                         <button id="video-stt-btn-${safeVideoId}" data-video-url="${safeVideoUrl}" style="padding: 6px 12px; font-size: 13px; background-color: #10b981; color: white; border: none; border-radius: 8px; cursor: pointer; transition: all 0.2s ease;">
                             🎬 转录视频音频
                         </button>
                     </div>
                     <div id="video-stt-result-container-${safeVideoId}" style="margin-top: 10px; display: none; background-color: #fff; padding: 12px; border-radius: 8px; border: 1px solid #e2e8f0;"></div>`;
                 }
-                videoHtml += `</div>`;
-                return videoHtml;
+                return html;
+            };
+            if (cachedUrls && cachedUrls.videoUrl) {
+                return `<div style="margin: 10px 0; padding: 12px; background-color: #f8fafc; border-radius: 12px; border: 1px solid #e2e8f0;" data-video-id="${safeVideoId}">${buildVideoHtml(cachedUrls.videoUrl)}</div>`;
             }
-            return `<div style="color:#D32F2F;font-style:italic;font-weight:bold;">[视频加载失败: ${escapeHtml(videoId)}]</div>`;
+            const placeholderId = `xiaoya-video-ph-${safeVideoId}-${Date.now()}`;
+            (async () => {
+                try {
+                    const urls = await getVideoUrl(videoId);
+                    if (urls && urls.videoUrl) {
+                        sessionStorage.setItem(cacheKey, JSON.stringify(urls));
+                        const container = document.getElementById(placeholderId);
+                        if (container) container.innerHTML = buildVideoHtml(urls.videoUrl);
+                    } else {
+                        const container = document.getElementById(placeholderId);
+                        if (container) container.innerHTML = `<div style="color:#D32F2F;font-style:italic;font-weight:bold;">[视频加载失败: ${escapeHtml(videoId)}]</div>`;
+                    }
+                } catch (e) {
+                    console.warn(`[视频] 异步加载视频 URL 失败 (videoId: ${videoId}):`, e);
+                    const container = document.getElementById(placeholderId);
+                    if (container) container.innerHTML = `<div style="color:#D32F2F;font-style:italic;font-weight:bold;">[视频加载失败: ${escapeHtml(videoId)}]</div>`;
+                }
+            })();
+            return `<div id="${placeholderId}" data-video-id="${safeVideoId}" style="margin: 10px 0; padding: 12px; background-color: #f8fafc; border-radius: 12px; border: 1px solid #e2e8f0;"><div style="padding: 18px; text-align: center; color: #4b5569; font-size: 13px;">🎬 正在加载视频...</div></div>`;
         }
         if ((normalizedType === 'MATH' || normalizedType === 'TEX' || normalizedType === 'TEXBLOCK' || normalizedType === 'DISPLAYTEX') && (data.teX || data.tex || data.value)) {
             const texBlock = data.teX || data.tex || data.value;
@@ -7833,6 +7860,8 @@
                             }
                             if (subTargetElement) {
                                 questionsToProcess.push({ question: subQuestion, element: subTargetElement });
+                                const subAiButton = subContainer.querySelector('.ai-assist-btn');
+                                if (subAiButton) individualAiButtons.push(subAiButton);
                             }
                         }
                     });
@@ -7856,15 +7885,11 @@
                         }
                         if (targetElement) {
                             questionsToProcess.push({ question, element: targetElement });
+                            const mainAiButton = qContainer.querySelector('.ai-assist-btn');
+                            if (mainAiButton) individualAiButtons.push(mainAiButton);
                         }
                     }
                 }
-            });
-            modalContainer.querySelectorAll('.ai-assist-btn').forEach(aiButton => {
-                aiButton.disabled = true;
-                aiButton.style.opacity = '0.5';
-                aiButton.style.cursor = 'not-allowed';
-                individualAiButtons.push(aiButton);
             });
             const totalQuestions = questionsToProcess.length;
             if (totalQuestions === 0) {
@@ -7875,6 +7900,11 @@
                 }
                 return;
             }
+            individualAiButtons.forEach(aiButton => {
+                aiButton.disabled = true;
+                aiButton.style.opacity = '0.5';
+                aiButton.style.cursor = 'not-allowed';
+            });
             const progress = createProgressBar();
             progress.show();
             const aiAssistAllButton = modalContainer.querySelector('#ai-assist-all-btn');
