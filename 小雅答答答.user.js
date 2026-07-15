@@ -479,13 +479,15 @@
     `.trim()
     };
     const SCRIPT_CONFIG = {
-        priorityApiBaseUrl: 'https://xiaoya-get-cdn.zygame1314.site',
-        remoteConfigUrls: [
-            'https://gist.githubusercontent.com/zygame1314/5e8a64928374c3fcc88a235f8f75d6e7/raw/xiaoya-config.json',
-            'https://gh-proxy.com/gist.githubusercontent.com/zygame1314/5e8a64928374c3fcc88a235f8f75d6e7/raw/xiaoya-config.json',
-            'https://ghfast.top/gist.githubusercontent.com/zygame1314/5e8a64928374c3fcc88a235f8f75d6e7/raw/xiaoya-config.json'
+        priorityApiBaseUrl: 'https://xiaoya-get-api.zygame1314.site',
+        backupApiBaseUrls: [
+            'https://api1.zygame1314.site',
+            'https://api2.zygame1314.site',
+            'https://api3.zygame1314.site',
+            'https://api4.zygame1314.site',
+            'https://api5.zygame1314.site'
         ],
-        defaultApiBaseUrl: 'https://xiaoya-manage.zygame1314-666.top',
+        defaultApiBaseUrl: 'https://xiaoya-get-api.zygame1314-666.top',
         cachedApiBaseUrl: null,
         lastFetchTimestamp: 0,
         cacheDuration: 300000
@@ -878,46 +880,32 @@
                 console.warn(`[优先线路] ${SCRIPT_CONFIG.priorityApiBaseUrl} 不可用，回退至动态获取...`);
             }
         }
-        for (const url of SCRIPT_CONFIG.remoteConfigUrls) {
-            try {
-                const response = await fetch(url, { cache: 'no-cache' });
-                if (!response.ok) throw new Error(`状态: ${response.status}`);
-                const config = await response.json();
-                if (config && Array.isArray(config.baseUrls) && config.baseUrls.length > 0) {
-                    HealthCheckVisualizer.addGroup('dynamic', '🌐 动态节点扫描...', config.baseUrls);
-                    for (let i = 0; i < config.baseUrls.length; i++) {
-                        const baseUrl = config.baseUrls[i];
-                        HealthCheckVisualizer.updateDot('dynamic', i, 'testing');
-                        if (await isUrlHealthy(baseUrl)) {
-                            HealthCheckVisualizer.updateDot('dynamic', i, 'success');
-                            HealthCheckVisualizer.updateGroupLabel('dynamic', '✅ 动态节点连接成功！');
-                            console.log(`[动态配置] 域名 ${baseUrl} 健康检查通过，选定此地址！`);
-                            SCRIPT_CONFIG.cachedApiBaseUrl = baseUrl;
-                            SCRIPT_CONFIG.lastFetchTimestamp = now;
-                            setTimeout(() => HealthCheckVisualizer.destroy(), 1200);
-                            return baseUrl;
-                        } else {
-                            HealthCheckVisualizer.updateDot('dynamic', i, 'failure');
-                        }
-                    }
-                    HealthCheckVisualizer.updateGroupLabel('dynamic', '❌ 所有动态节点均不可用');
-                    throw new Error("域名池中的所有地址都无法连接。");
-                } else {
-                    throw new Error("远程配置文件格式不正确或域名池为空。");
-                }
-            } catch (error) {
-                console.warn(`[动态配置] 路标 ${url} 尝试失败:`, error.message);
+        HealthCheckVisualizer.addGroup('backup', '🌐 备用线路扫描...', SCRIPT_CONFIG.backupApiBaseUrls);
+        for (let i = 0; i < SCRIPT_CONFIG.backupApiBaseUrls.length; i++) {
+            const baseUrl = SCRIPT_CONFIG.backupApiBaseUrls[i];
+            HealthCheckVisualizer.updateDot('backup', i, 'testing');
+            if (await isUrlHealthy(baseUrl)) {
+                HealthCheckVisualizer.updateDot('backup', i, 'success');
+                HealthCheckVisualizer.updateGroupLabel('backup', '✅ 备用线路连接成功！');
+                console.log(`[备用线路] 域名 ${baseUrl} 健康检查通过，选定此地址！`);
+                SCRIPT_CONFIG.cachedApiBaseUrl = baseUrl;
+                SCRIPT_CONFIG.lastFetchTimestamp = now;
+                setTimeout(() => HealthCheckVisualizer.destroy(), 1200);
+                return baseUrl;
+            } else {
+                HealthCheckVisualizer.updateDot('backup', i, 'failure');
             }
         }
-        console.error('[动态配置] 所有远程路标均获取失败！');
+        HealthCheckVisualizer.updateGroupLabel('backup', '❌ 所有备用线路均不可用');
+        console.error('[备用线路] 所有备用线路均不可用！');
         if (SCRIPT_CONFIG.cachedApiBaseUrl) {
-            console.log(`[动态配置] 回退至上次成功的缓存地址: ${SCRIPT_CONFIG.cachedApiBaseUrl}`);
+            console.log(`[备用线路] 回退至上次成功的缓存地址: ${SCRIPT_CONFIG.cachedApiBaseUrl}`);
             HealthCheckVisualizer.addGroup('fallback', `🔄 回退至缓存: ${SCRIPT_CONFIG.cachedApiBaseUrl}`, []);
             SCRIPT_CONFIG.lastFetchTimestamp = now;
             setTimeout(() => HealthCheckVisualizer.destroy(), 2000);
             return SCRIPT_CONFIG.cachedApiBaseUrl;
         }
-        console.log(`[动态配置] 回退至最终的默认备用地址: ${SCRIPT_CONFIG.defaultApiBaseUrl}`);
+        console.log(`[备用线路] 回退至最终的默认备用地址: ${SCRIPT_CONFIG.defaultApiBaseUrl}`);
         HealthCheckVisualizer.addGroup('default', `‼️ 启用最终备用线路，功能可能受限`, []);
         showNotification('无法连接到更新服务器，脚本将使用备用线路，功能可能受限。', { type: 'warning' });
         setTimeout(() => HealthCheckVisualizer.destroy(), 3000);
@@ -13894,7 +13882,7 @@
                     if (logo) {
                         iconHtml = `<img src="${logo}" alt="">`;
                     } else if (domain) {
-                        iconHtml = `<img src="https://favicon.im/${domain}" alt="">`;
+                        iconHtml = `<img src="https://favicon.cccyun.cc/${domain}" alt="">`;
                     }
                     let capabilitiesHtml = '';
                     if (capabilities && capabilities.length > 0) {
@@ -17403,7 +17391,7 @@
     }
     fetchModelsDevApi();
     const updateChecker = {
-        API_URL: 'https://api.zygame1314.site/check/scripts',
+        API_URL: 'https://blog.zygame1314.site/check/scripts',
         SCRIPT_NAME: '小雅答答答',
         CURRENT_VERSION: GM_info.script.version,
         async check() {
