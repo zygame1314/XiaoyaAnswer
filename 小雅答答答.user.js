@@ -481,11 +481,11 @@
     const SCRIPT_CONFIG = {
         priorityApiBaseUrl: 'https://xiaoya-get-api.zygame1314.site',
         backupApiBaseUrls: [
-            'https://api1.zygame1314.site',
-            'https://api2.zygame1314.site',
-            'https://api3.zygame1314.site',
-            'https://api4.zygame1314.site',
-            'https://api5.zygame1314.site'
+            'https://xiaoya-get-api1.zygame1314.site',
+            'https://xiaoya-get-api2.zygame1314.site',
+            'https://xiaoya-get-api3.zygame1314.site',
+            'https://xiaoya-get-api4.zygame1314.site',
+            'https://xiaoya-get-api5.zygame1314.site'
         ],
         defaultApiBaseUrl: 'https://xiaoya-get-api.zygame1314-666.top',
         cachedApiBaseUrl: null,
