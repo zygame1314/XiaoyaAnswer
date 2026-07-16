@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         小雅答答答
 // @license      MIT
-// @version      2.10.8
+// @version      2.10.8.1
 // @description  小雅平台学习助手 📖，智能整理归纳学习资料 📚，辅助完成练习 💪，并提供便捷的查阅和修改功能 📝！
 // @author       Yi
 // @match        https://*.ai-augmented.com/*
@@ -14009,7 +14009,7 @@
                     if (logo) {
                         iconHtml = `<img src="${logo}" alt="">`;
                     } else if (domain) {
-                        iconHtml = `<img src="https://favicon.im/${domain}" alt="">`;
+                        iconHtml = `<img src="https://favicon.cccyun.cc/${domain}" alt="">`;
                     }
                     let capabilitiesHtml = '';
                     if (capabilities.length > 0) {
