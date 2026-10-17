@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         小雅答答答
 // @license      MIT
-// @version      2.10.11
+// @version      2.10.12
 // @description  小雅平台学习助手 📖，智能整理归纳学习资料 📚，辅助完成练习 💪，并提供便捷的查阅和修改功能 📝！
 // @author       Yi
 // @match        https://*.ai-augmented.com/*
@@ -3371,27 +3371,6 @@
             if (contributedQuestions.length === 0) {
                 return { success: false, error: '未解析到任何有效答案' };
             }
-            // 采集本地 AI 生成记录(id → {置信度, 答案签名快照}), 供贡献时判定 AI 来源
-            const aiMetaMap = new Map();
-            try {
-                const storedAnswerData = JSON.parse(localStorage.getItem('answerData') || '[]');
-                const harvestAiMeta = (list) => {
-                    if (!Array.isArray(list)) return;
-                    list.forEach(item => {
-                        if (!item) return;
-                        if (item.ai_confidence !== undefined && item.ai_confidence !== null) {
-                            aiMetaMap.set(String(item.id), {
-                                confidence: item.ai_confidence,
-                                signature: item.ai_signature || null
-                            });
-                        }
-                        if (Array.isArray(item.subQuestions)) harvestAiMeta(item.subQuestions);
-                    });
-                };
-                harvestAiMeta(storedAnswerData);
-            } catch (e) {
-                console.warn('[贡献] 读取本地 AI 记录失败，按默认来源处理。', e);
-            }
             const finalContributedData = contributedQuestions.map(q => {
                 const hash = generateContentHash(q);
                 if (!hash) {
@@ -3400,22 +3379,13 @@
                 }
                 // 来源分级: 平台判对 = verified; 模板标准答案(已实证) = official
                 const sourceType = questionSourceById.get(String(q.id)) || 'ai';
-                const entry = {
+                return {
                     question_id: q.id,
                     paper_id: q.paper_id,
                     content_hash: hash,
                     answer_data: q,
                     source_type: sourceType
                 };
-                if (sourceType === 'ai') {
-                    // 只有当"当前答案"与"AI 生成时的快照"完全一致时, 才认为是 AI 原样答案并
-                    // 带上置信度; 用户手改过(签名不符)或本地无记录则视为来源未明的 ai。
-                    const meta = aiMetaMap.get(String(q.id));
-                    if (meta && meta.signature && meta.signature === computeAnswerSignature(q)) {
-                        entry.confidence = meta.confidence;
-                    }
-                }
-                return entry;
             }).filter(Boolean);
             if (finalContributedData.length === 0) {
                 return { success: false, error: '所有可贡献题目都无法生成有效哈希' };
@@ -7805,11 +7775,6 @@
                 }
                 isContentModified = true;
                 const finalizationOutcome = onFinalizeTarget(result.aiResult);
-                if (!finalizationOutcome || finalizationOutcome.success) {
-                    // 记录"AI 生成时的答案快照": 贡献时若答案仍与之一致才标记为 AI。
-                    // 用户手改答案后签名不再相等, 因此无需逐个编辑入口去清标记。
-                    question.ai_signature = computeAnswerSignature(question);
-                }
                 return finalizationOutcome || { success: true };
             } catch (error) {
                 console.error(`[AI辅助] 题 ${question.id} (${getQuestionType(question.type)}) 处理失败:`, error);
@@ -12593,10 +12558,9 @@
         const canonicalString = keyParts.join('|');
         return md5(canonicalString);
     }
-    // 答案内容签名: 只由"答案字段"决定(与题目内容哈希无关), 且按值而非选项 id,
-    // 因此"AI 生成时"与"贡献提交时"两次计算对同一份答案会得到相同签名。
-    // 用途: 贡献时用它比对快照, 只有当答案仍是 AI 原样时才打 AI 标记 —— 用户若
-    // 手改过答案, 签名不再相等, 自然不会被误标为 AI。
+    // 答案内容签名: 只由"答案字段"决定(与题目内容哈希无关), 且按值而非选项 id。
+    // 用途: 贡献时对"判错题"做交叉验证 —— 比较"模板里的答案签名"与"学生作答签名",
+    // 两者不同才证明模板给的是**标准答案**(而非学生自己那份)。
     function computeAnswerSignature(question) {
         if (!question || typeof question !== 'object') return null;
         const items = Array.isArray(question.answer_items) ? question.answer_items : [];
