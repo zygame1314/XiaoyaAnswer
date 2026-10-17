@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         小雅答答答
 // @license      MIT
-// @version      2.10.8.1
+// @version      2.10.9
 // @description  小雅平台学习助手 📖，智能整理归纳学习资料 📚，辅助完成练习 💪，并提供便捷的查阅和修改功能 📝！
 // @author       Yi
 // @match        https://*.ai-augmented.com/*
@@ -3270,10 +3270,15 @@
             const originalQuestionsData = answerSheetData.data.questions;
             const allOriginalQuestionsMap = new Map(flattenQuestions(originalQuestionsData).map(q => [q.id, q]));
             const studentCorrectAnswers = new Map();
+            const gradedWrongIds = new Set();
             if (answerSheetData.data.answer_record && answerSheetData.data.answer_record.answers) {
                 answerSheetData.data.answer_record.answers.forEach(ans => {
+                    const qid = String(ans.question_id);
                     if (ans.correct === 2 || ans.score > 0) {
                         studentCorrectAnswers.set(ans.question_id, ans.answer);
+                    } else if (ans.correct !== undefined && ans.correct !== null) {
+                        // 平台已批改但未判对 → 学生提交的是错答, 绝不能回灌题库
+                        gradedWrongIds.add(qid);
                     }
                 });
             }
@@ -3348,10 +3353,34 @@
                     }
                 }
             });
-            const contributedQuestions = Array.from(allClonedQuestionsMap.values()).filter(q => hasValidAnswer_frontEnd(q));
+            const contributedQuestions = Array.from(allClonedQuestionsMap.values()).filter(q => {
+                if (gradedWrongIds.has(String(q.id))) {
+                    console.log(`[贡献] 题目 ${q.id} 已被平台批改且判错，跳过贡献以避免污染题库。`);
+                    return false;
+                }
+                return hasValidAnswer_frontEnd(q);
+            });
             console.log(`[贡献] 准备贡献 ${contributedQuestions.length} 道高质量题目。`);
             if (contributedQuestions.length === 0) {
                 return { success: false, error: '未解析到任何有效答案' };
+            }
+            // 采集本地 AI 生成的置信度, 供后端做来源分级/投票
+            const aiConfidenceMap = new Map();
+            try {
+                const storedAnswerData = JSON.parse(localStorage.getItem('answerData') || '[]');
+                const harvestConfidence = (list) => {
+                    if (!Array.isArray(list)) return;
+                    list.forEach(item => {
+                        if (!item) return;
+                        if (item.ai_confidence !== undefined && item.ai_confidence !== null) {
+                            aiConfidenceMap.set(String(item.id), item.ai_confidence);
+                        }
+                        if (Array.isArray(item.subQuestions)) harvestConfidence(item.subQuestions);
+                    });
+                };
+                harvestConfidence(storedAnswerData);
+            } catch (e) {
+                console.warn('[贡献] 读取本地 AI 置信度失败，按默认来源处理。', e);
             }
             const finalContributedData = contributedQuestions.map(q => {
                 const hash = generateContentHash(q);
@@ -3359,12 +3388,22 @@
                     console.warn(`[贡献] 无法为题目 ${q.id} 生成哈希，跳过贡献。`);
                     return null;
                 }
-                return {
+                // 来源分级: 平台批改正确 = verified(高权重, 可自纠错题); 其余 = ai(低权重)
+                const isVerified = studentCorrectAnswers.has(q.id) ||
+                    studentCorrectAnswers.has(String(q.id));
+                const sourceType = isVerified ? 'verified' : 'ai';
+                const entry = {
                     question_id: q.id,
                     paper_id: q.paper_id,
                     content_hash: hash,
-                    answer_data: q
+                    answer_data: q,
+                    source_type: sourceType
                 };
+                if (!isVerified) {
+                    const conf = aiConfidenceMap.get(String(q.id));
+                    if (conf !== undefined) entry.confidence = conf;
+                }
+                return entry;
             }).filter(Boolean);
             if (finalContributedData.length === 0) {
                 return { success: false, error: '所有可贡献题目都无法生成有效哈希' };
