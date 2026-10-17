@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         小雅答答答
 // @license      MIT
-// @version      2.10.10
+// @version      2.10.11
 // @description  小雅平台学习助手 📖，智能整理归纳学习资料 📚，辅助完成练习 💪，并提供便捷的查阅和修改功能 📝！
 // @author       Yi
 // @match        https://*.ai-augmented.com/*
@@ -3267,99 +3267,106 @@
             };
             const clonedQuestions = JSON.parse(JSON.stringify(answerSheetData.data.questions));
             const allClonedQuestionsMap = new Map(flattenQuestions(clonedQuestions).map(q => [q.id, q]));
-            const originalQuestionsData = answerSheetData.data.questions;
-            const allOriginalQuestionsMap = new Map(flattenQuestions(originalQuestionsData).map(q => [q.id, q]));
-            const studentCorrectAnswers = new Map();
-            const gradedWrongIds = new Set();
+            const studentCorrectAnswers = new Map();   // 平台判对的作答
+            const gradedAnswersById = new Map();       // 全部作答记录(含判错), 用于交叉验证
             if (answerSheetData.data.answer_record && answerSheetData.data.answer_record.answers) {
                 answerSheetData.data.answer_record.answers.forEach(ans => {
-                    const qid = String(ans.question_id);
+                    gradedAnswersById.set(String(ans.question_id), ans);
                     if (ans.correct === 2 || ans.score > 0) {
                         studentCorrectAnswers.set(ans.question_id, ans.answer);
-                    } else if (ans.correct !== undefined && ans.correct !== null) {
-                        // 平台已批改但未判对 → 学生提交的是错答, 绝不能回灌题库
-                        gradedWrongIds.add(qid);
                     }
                 });
             }
+            // 每题来源: 'verified'(平台判对) | 'official'(模板下发的标准答案, 需实证)
+            const questionSourceById = new Map();
+            // 把学生的作答复原到题目对象(判对/判错共用); 抽成函数以便对"判错"题做交叉验证。
+            const applyStudentAnswerToQuestion = (question, studentAnswer) => {
+                switch (question.type) {
+                    case 1: case 5:
+                        question.answer_items.forEach(item => { item.answer_checked = (item.id === String(studentAnswer)) ? 2 : 1; });
+                        break;
+                    case 2: {
+                        let selectedItemIds = [];
+                        if (Array.isArray(studentAnswer)) selectedItemIds = studentAnswer.map(String);
+                        else if (typeof studentAnswer === 'string') selectedItemIds = studentAnswer.split(',').map(id => id.trim()).filter(id => id);
+                        question.answer_items.forEach(item => { item.answer_checked = selectedItemIds.includes(item.id) ? 2 : 1; });
+                        break;
+                    }
+                    case 4:
+                        try {
+                            const fillAnswersObject = JSON.parse(studentAnswer);
+                            question.answer_items.forEach(item => { if (fillAnswersObject.hasOwnProperty(item.id)) { item.answer = JSON.stringify({ blocks: [{ text: fillAnswersObject[item.id] || '' }] }); } });
+                        } catch (e) { console.warn(`[贡献] 解析学生填空题答案失败 (ID: ${question.id})`, e); }
+                        break;
+                    case 6:
+                        if (question.answer_items && question.answer_items.length > 0) question.answer_items[0].answer = JSON.stringify({ blocks: [{ text: studentAnswer }] });
+                        break;
+                    case 10:
+                        try {
+                            const parsedAnswer = JSON.parse(studentAnswer);
+                            if (!question.program_setting) question.program_setting = {};
+                            question.program_setting.code_answer = parsedAnswer.code || studentAnswer;
+                        } catch (e) {
+                            if (!question.program_setting) question.program_setting = {};
+                            question.program_setting.code_answer = studentAnswer;
+                        }
+                        break;
+                    case 12: {
+                        let sortedItemIds = [];
+                        if (Array.isArray(studentAnswer)) sortedItemIds = studentAnswer.map(String);
+                        else if (typeof studentAnswer === 'string') sortedItemIds = studentAnswer.split(',').map(id => id.trim()).filter(id => id);
+                        question.answer_items.forEach(item => { const order = sortedItemIds.indexOf(item.id); item.answer = (order !== -1) ? (order + 1).toString() : ''; });
+                        break;
+                    }
+                    case 13:
+                        try {
+                            const matchObject = (typeof studentAnswer === 'string' ? JSON.parse(studentAnswer) : studentAnswer)[0] || (typeof studentAnswer === 'string' ? JSON.parse(studentAnswer) : studentAnswer);
+                            const optionIdToValueMap = new Map();
+                            question.answer_items.forEach(item => {
+                                if (item.is_target_opt) {
+                                    optionIdToValueMap.set(item.id, item.value);
+                                }
+                            });
+                            question.answer_items.forEach(item => {
+                                if (!item.is_target_opt && matchObject.hasOwnProperty(item.id)) {
+                                    const matchedOptionId = matchObject[item.id];
+                                    if (optionIdToValueMap.has(matchedOptionId)) {
+                                        item.answer = optionIdToValueMap.get(matchedOptionId);
+                                    }
+                                }
+                            });
+                        } catch (e) { console.warn(`[贡献] 解析学生匹配题答案失败 (ID: ${question.id})`, e); }
+                        break;
+                }
+            };
             allClonedQuestionsMap.forEach(question => {
+                const ans = gradedAnswersById.get(String(question.id));
                 const studentAnswer = studentCorrectAnswers.get(question.id);
                 if (studentAnswer !== undefined) {
-                    console.log(`[贡献] 题目 ${question.id} (类型 ${question.type}) 使用【学生正确作答记录】填充。`);
-                    switch (question.type) {
-                        case 1: case 5:
-                            question.answer_items.forEach(item => { item.answer_checked = (item.id === String(studentAnswer)) ? 2 : 1; });
-                            break;
-                        case 2: {
-                            let selectedItemIds = [];
-                            if (Array.isArray(studentAnswer)) selectedItemIds = studentAnswer.map(String);
-                            else if (typeof studentAnswer === 'string') selectedItemIds = studentAnswer.split(',').map(id => id.trim()).filter(id => id);
-                            question.answer_items.forEach(item => { item.answer_checked = selectedItemIds.includes(item.id) ? 2 : 1; });
-                            break;
-                        }
-                        case 4:
-                            try {
-                                const fillAnswersObject = JSON.parse(studentAnswer);
-                                question.answer_items.forEach(item => { if (fillAnswersObject.hasOwnProperty(item.id)) { item.answer = JSON.stringify({ blocks: [{ text: fillAnswersObject[item.id] || '' }] }); } });
-                            } catch (e) { console.warn(`[贡献] 解析学生填空题答案失败 (ID: ${question.id})`, e); }
-                            break;
-                        case 6:
-                            if (question.answer_items && question.answer_items.length > 0) question.answer_items[0].answer = JSON.stringify({ blocks: [{ text: studentAnswer }] });
-                            break;
-                        case 10:
-                            try {
-                                const parsedAnswer = JSON.parse(studentAnswer);
-                                if (!question.program_setting) question.program_setting = {};
-                                question.program_setting.code_answer = parsedAnswer.code || studentAnswer;
-                            } catch (e) {
-                                if (!question.program_setting) question.program_setting = {};
-                                question.program_setting.code_answer = studentAnswer;
-                            }
-                            break;
-                        case 12: {
-                            let sortedItemIds = [];
-                            if (Array.isArray(studentAnswer)) sortedItemIds = studentAnswer.map(String);
-                            else if (typeof studentAnswer === 'string') sortedItemIds = studentAnswer.split(',').map(id => id.trim()).filter(id => id);
-                            question.answer_items.forEach(item => { const order = sortedItemIds.indexOf(item.id); item.answer = (order !== -1) ? (order + 1).toString() : ''; });
-                            break;
-                        }
-                        case 13:
-                            try {
-                                const matchObject = (typeof studentAnswer === 'string' ? JSON.parse(studentAnswer) : studentAnswer)[0] || (typeof studentAnswer === 'string' ? JSON.parse(studentAnswer) : studentAnswer);
-                                const optionIdToValueMap = new Map();
-                                question.answer_items.forEach(item => {
-                                    if (item.is_target_opt) {
-                                        optionIdToValueMap.set(item.id, item.value);
-                                    }
-                                });
-                                question.answer_items.forEach(item => {
-                                    if (!item.is_target_opt && matchObject.hasOwnProperty(item.id)) {
-                                        const matchedOptionId = matchObject[item.id];
-                                        if (optionIdToValueMap.has(matchedOptionId)) {
-                                            item.answer = optionIdToValueMap.get(matchedOptionId);
-                                        }
-                                    }
-                                });
-                            } catch (e) { console.warn(`[贡献] 解析学生匹配题答案失败 (ID: ${question.id})`, e); }
-                            break;
-                    }
+                    console.log(`[贡献] 题目 ${question.id} (类型 ${question.type}) 使用【学生正确作答】。`);
+                    applyStudentAnswerToQuestion(question, studentAnswer);
+                    questionSourceById.set(String(question.id), 'verified');
+                    return;
                 }
-                else {
-                    const originalQuestion = allOriginalQuestionsMap.get(question.id);
-                    if (originalQuestion && hasValidAnswer_frontEnd(originalQuestion)) {
-                        console.log(`[贡献] 题目 ${question.id} (类型 ${question.type}) 无学生作答记录，但使用【原始官方答案】。`);
+                if (ans) {
+                    // 学生被判错: 仅当"模板里的答案"与"学生的作答"不同, 才能证明模板给的是
+                    // **标准答案**(而非学生自己那份) → 才敢按 official 收录; 否则宁缺勿滥跳过。
+                    const templateSig = computeAnswerSignature(question);
+                    const probe = JSON.parse(JSON.stringify(question));
+                    applyStudentAnswerToQuestion(probe, ans.answer);
+                    const studentSig = computeAnswerSignature(probe);
+                    if (templateSig && studentSig && templateSig !== studentSig) {
+                        console.log(`[贡献] 题目 ${question.id} (类型 ${question.type}) 学生判错, 但模板含标准答案 → 按 official 收录。`);
+                        questionSourceById.set(String(question.id), 'official');
                     } else {
-                        console.log(`[贡献] 题目 ${question.id} (类型 ${question.type}) 无任何有效答案源，将在后续被过滤。`);
+                        console.log(`[贡献] 题目 ${question.id} (类型 ${question.type}) 判错且模板无可信标准答案, 跳过。`);
                     }
+                    return;
                 }
+                console.log(`[贡献] 题目 ${question.id} (类型 ${question.type}) 无作答记录, 跳过。`);
             });
-            const contributedQuestions = Array.from(allClonedQuestionsMap.values()).filter(q => {
-                if (gradedWrongIds.has(String(q.id))) {
-                    console.log(`[贡献] 题目 ${q.id} 已被平台批改且判错，跳过贡献以避免污染题库。`);
-                    return false;
-                }
-                return hasValidAnswer_frontEnd(q);
-            });
+            const contributedQuestions = Array.from(allClonedQuestionsMap.values())
+                .filter(q => questionSourceById.has(String(q.id)) && hasValidAnswer_frontEnd(q));
             console.log(`[贡献] 准备贡献 ${contributedQuestions.length} 道高质量题目。`);
             if (contributedQuestions.length === 0) {
                 return { success: false, error: '未解析到任何有效答案' };
@@ -3391,10 +3398,8 @@
                     console.warn(`[贡献] 无法为题目 ${q.id} 生成哈希，跳过贡献。`);
                     return null;
                 }
-                // 来源分级: 平台批改正确 = verified(高权重, 可自纠错题); 其余 = ai(低权重)
-                const isVerified = studentCorrectAnswers.has(q.id) ||
-                    studentCorrectAnswers.has(String(q.id));
-                const sourceType = isVerified ? 'verified' : 'ai';
+                // 来源分级: 平台判对 = verified; 模板标准答案(已实证) = official
+                const sourceType = questionSourceById.get(String(q.id)) || 'ai';
                 const entry = {
                     question_id: q.id,
                     paper_id: q.paper_id,
@@ -3402,7 +3407,7 @@
                     answer_data: q,
                     source_type: sourceType
                 };
-                if (!isVerified) {
+                if (sourceType === 'ai') {
                     // 只有当"当前答案"与"AI 生成时的快照"完全一致时, 才认为是 AI 原样答案并
                     // 带上置信度; 用户手改过(签名不符)或本地无记录则视为来源未明的 ai。
                     const meta = aiMetaMap.get(String(q.id));
