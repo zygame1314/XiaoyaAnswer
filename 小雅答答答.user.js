@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         小雅答答答
 // @license      MIT
-// @version      2.10.12
+// @version      2.10.13
 // @description  小雅平台学习助手 📖，智能整理归纳学习资料 📚，辅助完成练习 💪，并提供便捷的查阅和修改功能 📝！
 // @author       Yi
 // @match        https://*.ai-augmented.com/*
@@ -3267,16 +3267,15 @@
             };
             const clonedQuestions = JSON.parse(JSON.stringify(answerSheetData.data.questions));
             const allClonedQuestionsMap = new Map(flattenQuestions(clonedQuestions).map(q => [q.id, q]));
-            const studentCorrectAnswers = new Map();   // 平台判对的作答
-            const gradedAnswersById = new Map();       // 全部作答记录(含判错), 用于交叉验证
+            const gradedAnswersById = new Map();       // 全部作答记录(含判错/部分给分), 用于交叉验证
             if (answerSheetData.data.answer_record && answerSheetData.data.answer_record.answers) {
                 answerSheetData.data.answer_record.answers.forEach(ans => {
                     gradedAnswersById.set(String(ans.question_id), ans);
-                    if (ans.correct === 2 || ans.score > 0) {
-                        studentCorrectAnswers.set(ans.question_id, ans.answer);
-                    }
                 });
             }
+            // 客观题(有唯一"完整答案"): 多选/填空/排序/匹配 部分给分会产出"半截答案",
+            // 必须**满分**才算确证; 主观/编程(6/10)无唯一答案, 部分给分也算一个合法候选。
+            const OBJECTIVE_TYPES = [1, 2, 4, 5, 12, 13];
             // 每题来源: 'verified'(平台判对) | 'official'(模板下发的标准答案, 需实证)
             const questionSourceById = new Map();
             // 把学生的作答复原到题目对象(判对/判错共用); 抽成函数以便对"判错"题做交叉验证。
@@ -3341,29 +3340,36 @@
             };
             allClonedQuestionsMap.forEach(question => {
                 const ans = gradedAnswersById.get(String(question.id));
-                const studentAnswer = studentCorrectAnswers.get(question.id);
-                if (studentAnswer !== undefined) {
-                    console.log(`[贡献] 题目 ${question.id} (类型 ${question.type}) 使用【学生正确作答】。`);
-                    applyStudentAnswerToQuestion(question, studentAnswer);
+                if (!ans) {
+                    console.log(`[贡献] 题目 ${question.id} (类型 ${question.type}) 无作答记录, 跳过。`);
+                    return;
+                }
+                const fullScore = Number(question.score) || 0;
+                const scoredFull = fullScore <= 0 || Number(ans.score) >= fullScore;
+                const isObjective = OBJECTIVE_TYPES.includes(question.type);
+                // 客观题: 必须"满分"才算确证(部分给分的半截答案绝不收录);
+                // 主观/编程: correct===2 或 有分 即视为一个合法候选。
+                const isVerified = isObjective
+                    ? (ans.correct === 2 && scoredFull)
+                    : (ans.correct === 2 || Number(ans.score) > 0);
+                if (isVerified) {
+                    console.log(`[贡献] 题目 ${question.id} (类型 ${question.type}) 使用【平台判对${isObjective ? '(满分)' : ''}】。`);
+                    applyStudentAnswerToQuestion(question, ans.answer);
                     questionSourceById.set(String(question.id), 'verified');
                     return;
                 }
-                if (ans) {
-                    // 学生被判错: 仅当"模板里的答案"与"学生的作答"不同, 才能证明模板给的是
-                    // **标准答案**(而非学生自己那份) → 才敢按 official 收录; 否则宁缺勿滥跳过。
-                    const templateSig = computeAnswerSignature(question);
-                    const probe = JSON.parse(JSON.stringify(question));
-                    applyStudentAnswerToQuestion(probe, ans.answer);
-                    const studentSig = computeAnswerSignature(probe);
-                    if (templateSig && studentSig && templateSig !== studentSig) {
-                        console.log(`[贡献] 题目 ${question.id} (类型 ${question.type}) 学生判错, 但模板含标准答案 → 按 official 收录。`);
-                        questionSourceById.set(String(question.id), 'official');
-                    } else {
-                        console.log(`[贡献] 题目 ${question.id} (类型 ${question.type}) 判错且模板无可信标准答案, 跳过。`);
-                    }
-                    return;
+                // 未满分/判错: 仅当"模板里的答案"与"学生的作答"不同(证明模板给的是**标准答案**),
+                // 才按 official 收录; 否则宁缺勿滥跳过 —— 绝不收录半截答案。
+                const templateSig = computeAnswerSignature(question);
+                const probe = JSON.parse(JSON.stringify(question));
+                applyStudentAnswerToQuestion(probe, ans.answer);
+                const studentSig = computeAnswerSignature(probe);
+                if (templateSig && studentSig && templateSig !== studentSig) {
+                    console.log(`[贡献] 题目 ${question.id} (类型 ${question.type}) 学生未满分/判错, 但模板含标准答案 → 按 official 收录。`);
+                    questionSourceById.set(String(question.id), 'official');
+                } else {
+                    console.log(`[贡献] 题目 ${question.id} (类型 ${question.type}) 未满分/判错且模板无可信标准答案, 跳过。`);
                 }
-                console.log(`[贡献] 题目 ${question.id} (类型 ${question.type}) 无作答记录, 跳过。`);
             });
             const contributedQuestions = Array.from(allClonedQuestionsMap.values())
                 .filter(q => questionSourceById.has(String(q.id)) && hasValidAnswer_frontEnd(q));
