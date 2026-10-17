@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         小雅答答答
 // @license      MIT
-// @version      2.10.9
+// @version      2.10.10
 // @description  小雅平台学习助手 📖，智能整理归纳学习资料 📚，辅助完成练习 💪，并提供便捷的查阅和修改功能 📝！
 // @author       Yi
 // @match        https://*.ai-augmented.com/*
@@ -3364,23 +3364,26 @@
             if (contributedQuestions.length === 0) {
                 return { success: false, error: '未解析到任何有效答案' };
             }
-            // 采集本地 AI 生成的置信度, 供后端做来源分级/投票
-            const aiConfidenceMap = new Map();
+            // 采集本地 AI 生成记录(id → {置信度, 答案签名快照}), 供贡献时判定 AI 来源
+            const aiMetaMap = new Map();
             try {
                 const storedAnswerData = JSON.parse(localStorage.getItem('answerData') || '[]');
-                const harvestConfidence = (list) => {
+                const harvestAiMeta = (list) => {
                     if (!Array.isArray(list)) return;
                     list.forEach(item => {
                         if (!item) return;
                         if (item.ai_confidence !== undefined && item.ai_confidence !== null) {
-                            aiConfidenceMap.set(String(item.id), item.ai_confidence);
+                            aiMetaMap.set(String(item.id), {
+                                confidence: item.ai_confidence,
+                                signature: item.ai_signature || null
+                            });
                         }
-                        if (Array.isArray(item.subQuestions)) harvestConfidence(item.subQuestions);
+                        if (Array.isArray(item.subQuestions)) harvestAiMeta(item.subQuestions);
                     });
                 };
-                harvestConfidence(storedAnswerData);
+                harvestAiMeta(storedAnswerData);
             } catch (e) {
-                console.warn('[贡献] 读取本地 AI 置信度失败，按默认来源处理。', e);
+                console.warn('[贡献] 读取本地 AI 记录失败，按默认来源处理。', e);
             }
             const finalContributedData = contributedQuestions.map(q => {
                 const hash = generateContentHash(q);
@@ -3400,8 +3403,12 @@
                     source_type: sourceType
                 };
                 if (!isVerified) {
-                    const conf = aiConfidenceMap.get(String(q.id));
-                    if (conf !== undefined) entry.confidence = conf;
+                    // 只有当"当前答案"与"AI 生成时的快照"完全一致时, 才认为是 AI 原样答案并
+                    // 带上置信度; 用户手改过(签名不符)或本地无记录则视为来源未明的 ai。
+                    const meta = aiMetaMap.get(String(q.id));
+                    if (meta && meta.signature && meta.signature === computeAnswerSignature(q)) {
+                        entry.confidence = meta.confidence;
+                    }
                 }
                 return entry;
             }).filter(Boolean);
@@ -7793,6 +7800,11 @@
                 }
                 isContentModified = true;
                 const finalizationOutcome = onFinalizeTarget(result.aiResult);
+                if (!finalizationOutcome || finalizationOutcome.success) {
+                    // 记录"AI 生成时的答案快照": 贡献时若答案仍与之一致才标记为 AI。
+                    // 用户手改答案后签名不再相等, 因此无需逐个编辑入口去清标记。
+                    question.ai_signature = computeAnswerSignature(question);
+                }
                 return finalizationOutcome || { success: true };
             } catch (error) {
                 console.error(`[AI辅助] 题 ${question.id} (${getQuestionType(question.type)}) 处理失败:`, error);
@@ -12575,6 +12587,57 @@
         }
         const canonicalString = keyParts.join('|');
         return md5(canonicalString);
+    }
+    // 答案内容签名: 只由"答案字段"决定(与题目内容哈希无关), 且按值而非选项 id,
+    // 因此"AI 生成时"与"贡献提交时"两次计算对同一份答案会得到相同签名。
+    // 用途: 贡献时用它比对快照, 只有当答案仍是 AI 原样时才打 AI 标记 —— 用户若
+    // 手改过答案, 签名不再相等, 自然不会被误标为 AI。
+    function computeAnswerSignature(question) {
+        if (!question || typeof question !== 'object') return null;
+        const items = Array.isArray(question.answer_items) ? question.answer_items : [];
+        const C = (v) => getCanonicalContent(typeof v === 'string' ? v : (v === null || v === undefined ? '' : String(v)));
+        switch (question.type) {
+            case 1:
+            case 5: {
+                const c = items.filter(i => i.answer_checked === 2).map(i => C(i.value)).filter(Boolean).sort();
+                return c.length ? 'S:' + c.join('|') : null;
+            }
+            case 2: {
+                const c = items.filter(i => i.answer_checked === 2).map(i => C(i.value)).filter(Boolean).sort();
+                return c.length ? 'M:' + c.join('|') : null;
+            }
+            case 4: {
+                if (!items.length) return null;
+                const a = items.map(i => C(parseRichTextToPlainText(i.answer)));
+                return a.every(x => x === '') ? null : 'F:' + JSON.stringify(a);
+            }
+            case 6: {
+                const t = C(parseRichTextToPlainText(items[0] && items[0].answer));
+                return t ? 'T:' + t : null;
+            }
+            case 10: {
+                const code = (question.program_setting && question.program_setting.code_answer !== undefined && question.program_setting.code_answer !== null)
+                    ? question.program_setting.code_answer
+                    : (items[0] && items[0].answer);
+                const t = C(parseRichTextToPlainText(code));
+                return t ? 'C:' + t : null;
+            }
+            case 12: {
+                if (!items.length) return null;
+                const answered = items.filter(i => i.answer !== null && i.answer !== undefined && i.answer !== '');
+                if (answered.length !== items.length) return null;
+                const order = [...items].sort((a, b) => Number(a.answer) - Number(b.answer)).map(i => C(i.value));
+                return 'O:' + order.join('|');
+            }
+            case 13: {
+                const pairs = items
+                    .filter(i => !i.is_target_opt && i.answer !== null && i.answer !== undefined && i.answer !== '')
+                    .map(i => `${C(i.value)}=>${C(i.answer)}`);
+                return pairs.length ? 'P:' + pairs.sort().join('|') : null;
+            }
+            default:
+                return null;
+        }
     }
     async function getImageSize(imageData) {
         return new Promise((resolve, reject) => {
