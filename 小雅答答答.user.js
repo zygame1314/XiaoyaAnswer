@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         小雅答答答
 // @license      MIT
-// @version      2.10.14
+// @version      2.10.15
 // @description  小雅平台学习助手 📖，智能整理归纳学习资料 📚，辅助完成练习 💪，并提供便捷的查阅和修改功能 📝！
 // @author       Yi
 // @match        https://*.ai-augmented.com/*
@@ -159,6 +159,14 @@
                     console.warn('[自动贡献] 无法从当前页面URL获取 groupId 或 nodeId，贡献中止。');
                     return;
                 }
+                if (!localStorage.getItem('xiaoya_access_token')) {
+                    console.log('[自动贡献] 尚未激活，跳过提交后自动贡献。');
+                    return;
+                }
+                if (!(await checkAccountConsistency())) {
+                    console.warn('[自动贡献] 当前登录账号与激活绑定账号不一致，已跳过提交后自动贡献。');
+                    return;
+                }
                 const sessionKey = `submitted_and_contributed_${groupId}_${nodeId}`;
                 if (sessionStorage.getItem(sessionKey)) {
                     console.log(`[自动贡献] 作业 (G:${groupId}, N:${nodeId}) 在本次会话中已提交并贡献过，跳过重复触发。`);
@@ -235,7 +243,9 @@
                                     if (data.success) {
                                         const groupId = getGroupIDFromUrl(window.location.href);
                                         const nodeId = getNodeIDFromUrl(window.location.href);
-                                        triggerImmediateContribution(groupId, nodeId);
+                                        triggerImmediateContribution(groupId, nodeId).catch(err => {
+                                            console.warn('[自动贡献] 提交后自动贡献流程异常:', err);
+                                        });
                                     }
                                 });
                             }
@@ -302,7 +312,9 @@
                                         if (data.success) {
                                             const groupId = getGroupIDFromUrl(window.location.href);
                                             const nodeId = getNodeIDFromUrl(window.location.href);
-                                            triggerImmediateContribution(groupId, nodeId);
+                                            triggerImmediateContribution(groupId, nodeId).catch(err => {
+                                                console.warn('[自动贡献] 提交后自动贡献流程异常:', err);
+                                            });
                                         }
                                     } catch (e) {
                                         console.warn('[自动贡献] 解析XHR提交响应失败，不触发贡献。', e);
@@ -856,7 +868,6 @@
         }
         const boundUserId = localStorage.getItem('xiaoya_bound_user_id');
         if (boundUserId) {
-            // 优先使用与激活绑定账号一致且已缓存用户信息的 token，避免多学校凭据互相干扰。
             for (const token of tokens) {
                 try {
                     const cached = sessionStorage.getItem(`userInfo_${token}`);
@@ -881,7 +892,6 @@
             const headers = new Headers(options.headers || {});
             headers.set('authorization', `Bearer ${tokens[i]}`);
             const response = await fetch(url, { ...options, headers });
-            // 仅 401 判定为凭据无效；403 多为平台的业务拒绝，换账号重放请求有串号风险。
             if (response.status !== 401) {
                 return response;
             }
@@ -912,7 +922,6 @@
         }
         if (data === null) {
             const error = new Error(`${label}返回了非 JSON 内容: ${rawText.slice(0, 120)}`);
-            // 未登录时平台常返回 200 + 登录页 HTML，这里归为凭证问题，给出更明确的提示。
             if (/^\s*</.test(rawText)) {
                 error.status = response.status;
                 error.isAuthError = true;
@@ -924,7 +933,6 @@
     function isAuthError(error) {
         return !!(error && (error.isAuthError || error.status === 401 || error.status === 403));
     }
-    // 提交答案时，401/403 视为会话或权限问题需中止整轮；其他状态多为单题数据问题，不应中断整卷填写。
     function isFatalSubmitStatus(status) {
         return status === 401 || status === 403;
     }
@@ -1060,8 +1068,6 @@
             return null;
         }
     }
-    // 激活/校验时选定的账号必须与 access_token 的 JWT sub 一致，否则后端会拉黑真实账号。
-    // 因此这里只在 token 对应的 result.id 与 boundUserId 匹配时返回，且 xiaoyaToken 与 userInfo 同源。
     async function pickActivationAccount(boundUserId) {
         let mismatchedUserId = null;
         let sawAnyUser = false;
@@ -1080,7 +1086,6 @@
     }
     function addButtons() {
         if (!document.body) {
-            // @run-at document-start 时 body 可能还没解析出来，等 DOM 就绪再插入菜单。
             document.addEventListener('DOMContentLoaded', addButtons, { once: true });
             return;
         }
@@ -1397,7 +1402,7 @@
                 state: () => autoContributeEnabled,
                 onClick: async (el, iconEl) => {
                     if (autoContributeEnabled) {
-                        const confirmedToKeep = await showConfirmNotification('感谢你一直以来的贡献！💖', { animation: 'scale', confirmText: '继续贡献', cancelText: '仍要关闭', title: '请留步，有几句话想对你说', description: `<p style="margin-bottom: 12px; line-height: 1.6;">你开启的“自动贡献”功能是我们答案库成长的基石。每一次贡献，都在帮助更多和你一样的同学。</p><p style="margin-bottom: 12px; line-height: 1.6;">郑重承诺：</p><ul style="text-align: left; padding-left: 20px; margin: 0; font-size: 14px; color: #555;"><li style="margin-bottom: 8px;"><b>只上传题目和标准答案</b>，不包含你的作答记录或分数。</li><li style="margin-bottom: 8px;">所有上传都是<b>完全匿名的</b>，不涉及任何个人身份信息。</li><li style="margin-bottom: 8px;">为保证题库质量，系统<b>只会收录已完成且有答案的作业</b>。</li><li>你举手之劳将汇聚成强大的力量，感谢你的信任与支持！</li></ul>` });
+                        const confirmedToKeep = await showConfirmNotification('感谢你一直以来的贡献！💖', { animation: 'scale', icon: '💖', tone: 'info', confirmText: '继续贡献', cancelText: '仍要关闭', title: '请留步，有几句话想对你说', description: `<p style="margin-bottom: 12px; line-height: 1.6;">你开启的“自动贡献”功能是我们答案库成长的基石。每一次贡献，都在帮助更多和你一样的同学。</p><p style="margin-bottom: 12px; line-height: 1.6;">郑重承诺：</p><ul style="text-align: left; padding-left: 20px; margin: 0; font-size: 13.5px; color: #475569;"><li style="margin-bottom: 8px;"><b>只上传题目和标准答案</b>，不包含你的作答记录或分数。</li><li style="margin-bottom: 8px;">所有上传都是<b>完全匿名的</b>，不涉及任何个人身份信息。</li><li style="margin-bottom: 8px;">为保证题库质量，系统<b>只会收录已完成且有答案的作业</b>。</li><li>你举手之劳将汇聚成强大的力量，感谢你的信任与支持！</li></ul>` });
                         if (confirmedToKeep) {
                             showNotification('非常感谢！自动贡献功能将保持开启。', { type: 'success', animation: 'scale' });
                             el.querySelector('input').checked = true;
@@ -2091,97 +2096,153 @@
             confirmText = '确认',
             cancelText = '取消',
             title = null,
-            description = null
+            description = null,
+            icon = null,
+            tone = null,
+            align = null
         } = options;
+        const CONFIRM_TONES = {
+            warning: { accent: '#f59e0b', chipBg: '#fff7ed', chipText: '#b45309', boxBg: '#fffbeb', boxBorder: '#fde68a' },
+            danger: { accent: '#ef4444', chipBg: '#fef2f2', chipText: '#b91c1c', boxBg: '#fef2f2', boxBorder: '#fecaca' },
+            info: { accent: '#4f46e5', chipBg: '#eef2ff', chipText: '#4338ca', boxBg: '#f5f7ff', boxBorder: '#e0e7ff' }
+        };
+        const palette = CONFIRM_TONES[tone] || CONFIRM_TONES.info;
+        const isRich = !!(title || description || icon);
+        const isLeft = align === 'left' || !!description;
         return new Promise((resolve) => {
             const container = getNotificationContainer();
             const notification = document.createElement('div');
             notification.style.cssText = `
                 position: relative;
                 margin-bottom: 10px;
-                padding: 20px 25px;
+                padding: 20px 22px;
                 border-radius: 16px;
-                color: #333;
-                font-size: 16px;
-                font-weight: bold;
-                box-shadow: 0 10px 25px rgba(0,0,0,0.1), 0 5px 10px rgba(0,0,0,0.05);
+                color: #1f2937;
+                box-shadow: 0 18px 40px -12px rgba(15, 23, 42, 0.25), 0 4px 12px rgba(15, 23, 42, 0.06);
                 pointer-events: auto;
                 opacity: 0;
-                transform: translateY(-20px);
+                transform: translateY(-16px);
                 transition: all 0.3s cubic-bezier(0.68, -0.55, 0.265, 1.55);
                 display: flex;
                 flex-direction: column;
-                gap: 15px;
-                background: linear-gradient(145deg, #ffffff, #f8f9fa);
-                backdrop-filter: blur(8px);
-                border: 1px solid rgba(0,0,0,0.05);
-                max-width: 450px;
+                gap: 14px;
+                background: #ffffff;
+                border: 1px solid rgba(15, 23, 42, 0.08);
+                max-width: 430px;
+                min-width: 320px;
+                box-sizing: border-box;
             `;
-            if (title) {
-                const titleDiv = document.createElement('h3');
-                titleDiv.textContent = title;
-                titleDiv.style.cssText = `
-                    margin: 0;
-                    font-size: 18px;
-                    font-weight: 700;
-                    color: #1f2937;
-                    text-align: center;
-                `;
-                notification.appendChild(titleDiv);
+            if (isRich) {
+                const header = document.createElement('div');
+                header.style.cssText = `display: flex; align-items: center; gap: 10px; justify-content: ${isLeft ? 'flex-start' : 'center'};`;
+                if (icon) {
+                    const chip = document.createElement('span');
+                    chip.textContent = icon;
+                    chip.style.cssText = `
+                        width: 32px;
+                        height: 32px;
+                        flex: 0 0 32px;
+                        display: flex;
+                        align-items: center;
+                        justify-content: center;
+                        border-radius: 10px;
+                        font-size: 17px;
+                        line-height: 1;
+                        background: ${palette.chipBg};
+                        color: ${palette.chipText};
+                    `;
+                    header.appendChild(chip);
+                }
+                if (title) {
+                    const titleDiv = document.createElement('div');
+                    titleDiv.textContent = title;
+                    titleDiv.style.cssText = `
+                        font-size: 16px;
+                        font-weight: 700;
+                        color: #111827;
+                        letter-spacing: 0.2px;
+                    `;
+                    header.appendChild(titleDiv);
+                }
+                notification.appendChild(header);
             }
             const messageDiv = document.createElement('div');
             messageDiv.innerHTML = message;
-            messageDiv.style.fontWeight = '600';
-            messageDiv.style.textAlign = 'center';
+            messageDiv.style.cssText = `
+                font-size: 15px;
+                font-weight: 600;
+                line-height: 1.7;
+                color: ${isRich ? '#334155' : '#1f2937'};
+                text-align: ${isLeft ? 'left' : 'center'};
+            `;
             notification.appendChild(messageDiv);
             if (description) {
                 const descriptionDiv = document.createElement('div');
                 descriptionDiv.innerHTML = description;
                 descriptionDiv.style.cssText = `
-                    margin-top: 5px;
-                    font-size: 15px;
-                    font-weight: normal;
-                    color: #4b5569;
-                    line-height: 1.5;
-                    text-align: center;
+                    font-size: 13.5px;
+                    font-weight: 400;
+                    color: #475569;
+                    line-height: 1.75;
+                    text-align: left;
+                    padding: 11px 13px;
+                    border-radius: 10px;
+                    background: ${palette.boxBg};
+                    border: 1px solid ${palette.boxBorder};
+                    white-space: pre-line;
                 `;
                 notification.appendChild(descriptionDiv);
             }
             const buttonContainer = document.createElement('div');
             buttonContainer.style.cssText = `
                 display: flex;
-                gap: 12px;
-                justify-content: center;
-                margin-top: 10px;
+                gap: 10px;
+                justify-content: ${isLeft ? 'flex-end' : 'center'};
+                margin-top: 2px;
             `;
             const confirmBtn = document.createElement('button');
             confirmBtn.textContent = confirmText;
             confirmBtn.style.cssText = `
-                padding: 8px 18px;
+                padding: 9px 18px;
                 border: none;
-                border-radius: 8px;
-                background: #4f46e5;
-                color: white;
+                border-radius: 9px;
+                background: ${palette.accent};
+                color: #ffffff;
                 cursor: pointer;
-                font-weight: bold;
-                transition: all 0.2s ease;
+                font-size: 14px;
+                font-weight: 600;
+                transition: transform 0.15s ease, filter 0.15s ease;
+                box-shadow: 0 6px 14px -6px ${palette.accent};
             `;
             const cancelBtn = document.createElement('button');
             cancelBtn.textContent = cancelText;
             cancelBtn.style.cssText = `
-                padding: 8px 18px;
-                border: 1px solid #d1d5db;
-                border-radius: 8px;
-                background: transparent;
-                color: #4b5569;
+                padding: 9px 18px;
+                border: 1px solid #e2e8f0;
+                border-radius: 9px;
+                background: #ffffff;
+                color: #475569;
                 cursor: pointer;
-                font-weight: bold;
-                transition: all 0.2s ease;
+                font-size: 14px;
+                font-weight: 600;
+                transition: transform 0.15s ease, background 0.15s ease;
             `;
-            [confirmBtn, cancelBtn].forEach(btn => {
-                btn.onmouseover = () => { btn.style.transform = 'translateY(-1px)'; btn.style.filter = 'brightness(1.1)'; };
-                btn.onmouseout = () => { btn.style.transform = 'translateY(0)'; btn.style.filter = 'brightness(1)'; };
-            });
+            confirmBtn.onmouseover = () => {
+                confirmBtn.style.transform = 'translateY(-1px)';
+                confirmBtn.style.filter = 'brightness(1.06)';
+            };
+            confirmBtn.onmouseout = () => {
+                confirmBtn.style.transform = 'translateY(0)';
+                confirmBtn.style.filter = 'brightness(1)';
+            };
+            cancelBtn.onmouseover = () => {
+                cancelBtn.style.transform = 'translateY(-1px)';
+                cancelBtn.style.background = '#f8fafc';
+            };
+            cancelBtn.onmouseout = () => {
+                cancelBtn.style.transform = 'translateY(0)';
+                cancelBtn.style.background = '#ffffff';
+            };
             buttonContainer.appendChild(cancelBtn);
             buttonContainer.appendChild(confirmBtn);
             notification.appendChild(buttonContainer);
@@ -2448,6 +2509,8 @@
                         {
                             animation: 'scale',
                             title: '切换激活账号',
+                            icon: '🔁',
+                            tone: 'warning',
                             confirmText: '清除旧绑定并继续',
                             cancelText: '取消'
                         }
@@ -2479,6 +2542,8 @@
                     {
                         animation: 'scale',
                         title: '账号绑定确认',
+                        icon: '🔑',
+                        tone: 'info',
                         confirmText: '确认激活',
                         cancelText: '取消'
                     }
@@ -2648,6 +2713,16 @@
         }
         if (!response.ok) {
             const { data: errorData, rawText } = await parseErrorBody(response);
+            if (errorData.code === 'IDENTITY_MISMATCH') {
+                const mismatchError = new Error(errorData.error || '当前登录的小雅账号与激活账号不一致，请只登录激活时使用的账号后重试。');
+                mismatchError.isIdentityMismatch = true;
+                throw mismatchError;
+            }
+            if (errorData.code === 'CLIENT_HASH_MISMATCH') {
+                const hashError = new Error(errorData.error || '题目校验未通过，通常是脚本版本过旧，请更新后再贡献。');
+                hashError.isClientHashMismatch = true;
+                throw hashError;
+            }
             throw new Error(`请求失败 (${response.status}): ${errorData.error || errorData.message || rawText.trim() || response.statusText}`);
         }
         return parseJsonResponse(response, '激活服务');
@@ -2871,7 +2946,9 @@
             }
         } catch (error) {
             console.error('检查用量失败:', error);
-            if (error.message.includes('激活')) {
+            if (error.isIdentityMismatch) {
+                contentArea.innerHTML = `<div style="color:#b45309;line-height:1.7;text-align:left;">${error.message}</div>`;
+            } else if (error.message.includes('激活')) {
                 closeModal();
                 setTimeout(promptActivationCode, 300);
             } else {
@@ -2940,17 +3017,16 @@
         }
         if (!currentUserInfo) {
             if (mismatchedUserId) {
-                showNotification(
-                    `当前登录账号（${mismatchedUserId}）与激活绑定账号（${boundUserId}）不一致，已中止操作以保护账号。`,
-                    { type: 'error', duration: 10000, keywords: ['账号', '不一致', '保护'] }
-                );
                 const confirmed = await showConfirmNotification(
-                    '脚本检测到当前登录的小雅账号与激活脚本时使用的账号不一致。是否要清除当前激活信息，以便使用新账号重新激活？（你的激活码依旧有效）',
+                    '当前登录的小雅账号与激活绑定的账号不一致，已中止本次操作。',
                     {
                         animation: 'scale',
-                        title: '账号不一致警告',
+                        title: '账号不一致',
+                        icon: '⚠️',
+                        tone: 'warning',
+                        description: '小雅所有学校子域共用同一个登录凭证，登录其他学校会把它覆盖成那个学校的账号。\n请退出其他学校，只保留激活时使用的账号后刷新重试。\n\n如果当前这个账号才是你要用的，可以清除当前激活信息重新激活（激活码依旧有效）。',
                         confirmText: '清除并重新激活',
-                        cancelText: '取消操作'
+                        cancelText: '等会再说'
                     }
                 );
                 if (confirmed) {
@@ -3535,7 +3611,14 @@
         } catch (error) {
             console.error('获取或处理答案失败:', error);
             const errorMessage = String(error && error.message ? error.message : error).toLowerCase();
-            if (isAuthError(error)) {
+            if (error.isIdentityMismatch) {
+                showNotification(error.message, {
+                    type: 'warning',
+                    duration: 14000,
+                    keywords: ['账号', '登录', '不一致'],
+                    animation: 'scale'
+                });
+            } else if (isAuthError(error)) {
                 showAuthErrorNotification('获取答案');
             } else if (errorMessage.includes('欺诈行为警告')) {
                 showNotification('检测到异常操作，你的授权已被吊销，请重新激活。', { type: 'error', duration: 8000, animation: 'scale' });
@@ -3655,18 +3738,14 @@
             };
             const clonedQuestions = JSON.parse(JSON.stringify(answerSheetData.data.questions));
             const allClonedQuestionsMap = new Map(flattenQuestions(clonedQuestions).map(q => [q.id, q]));
-            const gradedAnswersById = new Map();       // 全部作答记录(含判错/部分给分), 用于交叉验证
+            const gradedAnswersById = new Map();
             if (answerSheetData.data.answer_record && answerSheetData.data.answer_record.answers) {
                 answerSheetData.data.answer_record.answers.forEach(ans => {
                     gradedAnswersById.set(String(ans.question_id), ans);
                 });
             }
-            // 客观题(有唯一"完整答案"): 多选/填空/排序/匹配 部分给分会产出"半截答案",
-            // 必须**满分**才算确证; 主观/编程(6/10)无唯一答案, 部分给分也算一个合法候选。
             const OBJECTIVE_TYPES = [1, 2, 4, 5, 12, 13];
-            // 每题来源: 'verified'(平台判对) | 'official'(模板下发的标准答案, 需实证)
             const questionSourceById = new Map();
-            // 把学生的作答复原到题目对象(判对/判错共用); 抽成函数以便对"判错"题做交叉验证。
             const applyStudentAnswerToQuestion = (question, studentAnswer) => {
                 switch (question.type) {
                     case 1: case 5:
@@ -3735,8 +3814,6 @@
                 const fullScore = Number(question.score) || 0;
                 const scoredFull = fullScore <= 0 || Number(ans.score) >= fullScore;
                 const isObjective = OBJECTIVE_TYPES.includes(question.type);
-                // 客观题: 必须"满分"才算确证(部分给分的半截答案绝不收录);
-                // 主观/编程: correct===2 或 有分 即视为一个合法候选。
                 const isVerified = isObjective
                     ? (ans.correct === 2 && scoredFull)
                     : (ans.correct === 2 || Number(ans.score) > 0);
@@ -3746,8 +3823,6 @@
                     questionSourceById.set(String(question.id), 'verified');
                     return;
                 }
-                // 未满分/判错: 仅当"模板里的答案"与"学生的作答"不同(证明模板给的是**标准答案**),
-                // 才按 official 收录; 否则宁缺勿滥跳过 —— 绝不收录半截答案。
                 const templateSig = computeAnswerSignature(question);
                 const probe = JSON.parse(JSON.stringify(question));
                 applyStudentAnswerToQuestion(probe, ans.answer);
@@ -3771,7 +3846,6 @@
                     console.warn(`[贡献] 无法为题目 ${q.id} 生成哈希，跳过贡献。`);
                     return null;
                 }
-                // 来源分级: 平台判对 = verified; 模板标准答案(已实证) = official
                 const sourceType = questionSourceById.get(String(q.id)) || 'ai';
                 return {
                     question_id: q.id,
@@ -3800,7 +3874,10 @@
             return { success: true, message: lastMessage || `已贡献 ${acceptedCount} 道题目` };
         } catch (error) {
             console.error(`贡献作业 (nodeId: ${nodeId}) 时出错:`, error);
-            return { success: false, error: error.message };
+            const failure = { success: false, error: error.message };
+            if (error.isClientHashMismatch) failure.code = 'CLIENT_HASH_MISMATCH';
+            if (error.isIdentityMismatch) failure.code = 'IDENTITY_MISMATCH';
+            return failure;
         }
     }
     async function asyncPool(poolLimit, array, iteratorFn) {
@@ -3859,6 +3936,9 @@
                 } else {
                     if (result.error === '未解析到任何有效答案') {
                         console.log(`[后台扫描] 作业 (ID: ${task.node_id}) 无有效答案可贡献，标记为已检查。`);
+                        markAssignmentAsContributed(groupId, task.node_id);
+                    } else if (result.code === 'CLIENT_HASH_MISMATCH') {
+                        console.warn(`[后台扫描] 作业 (ID: ${task.node_id}) 因脚本与服务端哈希算法不一致无法贡献，先标记跳过；升级脚本后的下一轮扫描会重试。`);
                         markAssignmentAsContributed(groupId, task.node_id);
                     } else {
                         failCount++;
@@ -4270,7 +4350,6 @@
                         console.warn('[填写] 读取抽题信息失败:', e);
                     }
                 }
-                // 接口没给出抽题清单时，用页面实际渲染的题目兜底；仅对确认过的抽题试卷生效，避免误伤分页渲染的整卷。
                 if (samplingIds.length === 0) samplingIds = domQuestionIds;
                 if (samplingIds.length === 0) {
                     progress.hide();
@@ -4329,7 +4408,14 @@
         } catch (error) {
             progress.hide();
             console.error('填写答案失败:', error);
-            if (isAuthError(error)) {
+            if (error.isIdentityMismatch) {
+                showNotification(error.message, {
+                    type: 'warning',
+                    duration: 14000,
+                    keywords: ['账号', '登录', '不一致'],
+                    animation: 'scale'
+                });
+            } else if (isAuthError(error)) {
                 showAuthErrorNotification('填写答案');
             } else {
                 showNotification('填写答案失败，请查看控制台。', {
@@ -4789,7 +4875,6 @@
             if (currentGroupId && groupId && groupId !== currentGroupId) return;
             let backgroundBusy = false;
             try {
-                // backgroundTaskManager 可能尚未初始化（document-start 阶段），单独兜住 TDZ 异常。
                 if (typeof backgroundTaskManager !== 'undefined') backgroundBusy = backgroundTaskManager.isTaskRunning;
             } catch (e) {
                 backgroundBusy = false;
@@ -4903,7 +4988,6 @@
         if (context.groupId) return context.groupId;
         const match = String(url).match(/mycourse\/(\d+)/);
         if (match) return match[1];
-        // 页面请求上下文里的课程必须与当前任务对应，否则可能是上一个课程遗留的缓存。
         const contextNodeMatches = !context.nodeId || PAGE_CONTEXT.nodeId === context.nodeId;
         if (contextNodeMatches && PAGE_CONTEXT.groupId && (Date.now() - PAGE_CONTEXT.groupUpdatedAt) < 120000) {
             console.log(`[URL解析器] URL 中未包含 GroupID，使用页面请求上下文: ${PAGE_CONTEXT.groupId}`);
@@ -13158,9 +13242,6 @@
         const canonicalString = keyParts.join('|');
         return md5(canonicalString);
     }
-    // 答案内容签名: 只由"答案字段"决定(与题目内容哈希无关), 且按值而非选项 id。
-    // 用途: 贡献时对"判错题"做交叉验证 —— 比较"模板里的答案签名"与"学生作答签名",
-    // 两者不同才证明模板给的是**标准答案**(而非学生自己那份)。
     function computeAnswerSignature(question) {
         if (!question || typeof question !== 'object') return null;
         const items = Array.isArray(question.answer_items) ? question.answer_items : [];
@@ -13328,7 +13409,6 @@
         }
     }
     function getAutoFillFlagKey() {
-        // 用 URL 而不是解析出的 nodeId 做标记，避免刷新后解析不到 nodeId 时重复自动填写。
         return `xiaoya_autofilled_${window.location.pathname}${window.location.hash}`;
     }
     async function checkAndExecuteAuto() {
