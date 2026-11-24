@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         小雅答答答
 // @license      MIT
-// @version      2.10.15
+// @version      2.10.16
 // @description  小雅平台学习助手 📖，智能整理归纳学习资料 📚，辅助完成练习 💪，并提供便捷的查阅和修改功能 📝！
 // @author       Yi
 // @match        https://*.ai-augmented.com/*
@@ -33,6 +33,60 @@
         updatedAt: 0,
         sourceUrl: ''
     };
+    const PLATFORM_TOKEN_CACHE = {
+        token: null,
+        updatedAt: 0
+    };
+    const PLATFORM_TOKEN_CACHE_TTL = 30 * 60 * 1000;
+    function normalizeBearerToken(raw) {
+        if (typeof raw !== 'string') return null;
+        let token = raw.trim();
+        if (!token) return null;
+        if (/^Bearer\s+/i.test(token)) {
+            token = token.replace(/^Bearer\s+/i, '').trim();
+        }
+        if (!token || token.length > 2048 || /[\s\r\n]/.test(token)) return null;
+        return token;
+    }
+    function rememberVerifiedPlatformToken(raw) {
+        const token = normalizeBearerToken(raw);
+        if (!token) return;
+        PLATFORM_TOKEN_CACHE.token = token;
+        PLATFORM_TOKEN_CACHE.updatedAt = Date.now();
+    }
+    function extractBearerTokenFromHeaders(headers) {
+        if (!headers) return null;
+        try {
+            if (typeof Headers !== 'undefined' && headers instanceof Headers) {
+                return normalizeBearerToken(headers.get('authorization'));
+            }
+            if (Array.isArray(headers)) {
+                for (const entry of headers) {
+                    if (Array.isArray(entry) && typeof entry[0] === 'string' && entry[0].toLowerCase() === 'authorization') {
+                        return normalizeBearerToken(entry[1]);
+                    }
+                }
+                return null;
+            }
+            if (typeof headers === 'object') {
+                for (const key of Object.keys(headers)) {
+                    if (key.toLowerCase() === 'authorization') {
+                        return normalizeBearerToken(headers[key]);
+                    }
+                }
+            }
+        } catch (e) {
+        }
+        return null;
+    }
+    function extractBearerTokenFromFetchArgs(input, init) {
+        const fromInit = extractBearerTokenFromHeaders(init && init.headers);
+        if (fromInit) return fromInit;
+        if (typeof Request !== 'undefined' && input instanceof Request) {
+            return extractBearerTokenFromHeaders(input.headers);
+        }
+        return null;
+    }
     const localStorage = {
         getItem: (key) => GM_getValue(key, null),
         setItem: (key, value) => GM_setValue(key, value),
@@ -46,6 +100,7 @@
             fetch: window.fetch,
             xhrOpen: XMLHttpRequest.prototype.open,
             xhrSend: XMLHttpRequest.prototype.send,
+            xhrSetRequestHeader: XMLHttpRequest.prototype.setRequestHeader,
             sendBeacon: navigator.sendBeacon ? navigator.sendBeacon.bind(navigator) : null
         },
         _decode: (str) => decodeURIComponent(escape(atob(str))),
@@ -222,6 +277,8 @@
                 if (typeof input === 'string') { urlStr = input; }
                 else if (input instanceof Request) { urlStr = input.url; }
                 else { urlStr = String(input); }
+                let capturedSameOriginToken = null;
+                let shouldWatchSubmit = false;
                 try {
                     rememberPageContext(urlStr);
                     const urlObj = new URL(urlStr, window.location.origin);
@@ -233,39 +290,68 @@
                         console.warn(`[运行时] 阻止了跨域字体请求 (fetch) 以避免 CORS 错误:`, urlStr);
                         return Promise.resolve(new Response(new Blob([], { type: 'font/woff' }), { status: 200 }));
                     }
-                    if (urlStr.includes(SUBMIT_URL_SIGNATURE) && init && (init.method || '').toUpperCase() === 'POST') {
+                    if (urlObj.origin === window.location.origin && urlObj.pathname.startsWith('/api/')) {
+                        capturedSameOriginToken = extractBearerTokenFromFetchArgs(input, init);
+                    }
+                    const requestMethod = ((init && init.method) || (input instanceof Request && input.method) || '').toUpperCase();
+                    if (urlStr.includes(SUBMIT_URL_SIGNATURE) && requestMethod === 'POST') {
+                        shouldWatchSubmit = true;
                         console.log('[自动贡献] 检测到作业提交请求 (fetch)，将在其成功后触发贡献。');
-                        const originalFetchPromise = nativeFetch.apply(window, arguments);
-                        originalFetchPromise.then(response => {
-                            const clonedResponse = response.clone();
-                            if (clonedResponse.ok) {
-                                clonedResponse.json().then(data => {
-                                    if (data.success) {
-                                        const groupId = getGroupIDFromUrl(window.location.href);
-                                        const nodeId = getNodeIDFromUrl(window.location.href);
-                                        triggerImmediateContribution(groupId, nodeId).catch(err => {
-                                            console.warn('[自动贡献] 提交后自动贡献流程异常:', err);
-                                        });
-                                    }
-                                });
-                            }
-                        }).catch(err => {
-                            console.warn('[自动贡献] 作业提交请求 (fetch) 失败，不触发贡献。', err);
-                        });
-                        return originalFetchPromise;
                     }
                 } catch (e) {
                     console.warn('[运行时] 解析 fetch 目标 URL 时发生异常，回退至原生 fetch：', e);
                 }
-                return nativeFetch.apply(window, arguments);
+                const originalFetchPromise = nativeFetch.apply(window, arguments);
+                if (capturedSameOriginToken) {
+                    originalFetchPromise.then(response => {
+                        if (response && response.ok) {
+                            rememberVerifiedPlatformToken(capturedSameOriginToken);
+                        }
+                    }).catch(() => {});
+                }
+                if (shouldWatchSubmit) {
+                    originalFetchPromise.then(response => {
+                        const clonedResponse = response.clone();
+                        if (clonedResponse.ok) {
+                            clonedResponse.json().then(data => {
+                                if (data.success) {
+                                    const groupId = getGroupIDFromUrl(window.location.href);
+                                    const nodeId = getNodeIDFromUrl(window.location.href);
+                                    triggerImmediateContribution(groupId, nodeId).catch(err => {
+                                        console.warn('[自动贡献] 提交后自动贡献流程异常:', err);
+                                    });
+                                }
+                            }).catch(() => {});
+                        }
+                    }).catch(err => {
+                        console.warn('[自动贡献] 作业提交请求 (fetch) 失败，不触发贡献。', err);
+                    });
+                }
+                return originalFetchPromise;
             };
             protectProperty(window, 'fetch', hookedFetch);
             const hookedXhrOpen = function (method, url, ...rest) {
                 this._requestURL = url;
+                this._capturedBearerToken = null;
                 rememberPageContext(url);
                 return self._nativeRefs.xhrOpen.apply(this, arguments);
             };
             protectProperty(XMLHttpRequest.prototype, 'open', hookedXhrOpen);
+            if (self._nativeRefs.xhrSetRequestHeader) {
+                const hookedXhrSetRequestHeader = function (header, value) {
+                    try {
+                        if (typeof header === 'string' && header.toLowerCase() === 'authorization') {
+                            const token = normalizeBearerToken(String(value || ''));
+                            if (token) {
+                                this._capturedBearerToken = token;
+                            }
+                        }
+                    } catch (e) {
+                    }
+                    return self._nativeRefs.xhrSetRequestHeader.apply(this, arguments);
+                };
+                protectProperty(XMLHttpRequest.prototype, 'setRequestHeader', hookedXhrSetRequestHeader);
+            }
             const hookedXhrSend = function (body) {
                 if (this._requestURL) {
                     try {
@@ -288,6 +374,14 @@
                             this.dispatchEvent(new Event('readystatechange'));
                             this.dispatchEvent(new Event('load'));
                             return;
+                        }
+                        if (this._capturedBearerToken && urlObj.origin === window.location.origin && urlObj.pathname.startsWith('/api/')) {
+                            const capturedToken = this._capturedBearerToken;
+                            this.addEventListener('load', function () {
+                                if (this.status >= 200 && this.status < 300) {
+                                    rememberVerifiedPlatformToken(capturedToken);
+                                }
+                            }, { once: true });
                         }
                         if (this._requestURL.includes(SUBMIT_URL_SIGNATURE)) {
                             console.log('[自动贡献] 检测到作业提交请求 (XHR)，将在其成功后触发贡献。');
@@ -847,17 +941,57 @@
     function areAITasksRunning() {
         return Array.from(activeAIControllers).some(c => !c.signal.aborted);
     }
+    function decodeJwtPayloadText(jwt) {
+        try {
+            const part = String(jwt || '').split('.')[1];
+            if (!part) return null;
+            let text = part.replace(/-/g, '+').replace(/_/g, '/');
+            while (text.length % 4) text += '=';
+            return atob(text);
+        } catch (e) {
+            return null;
+        }
+    }
+    function getAccessTokenHintFromGlobalConfig() {
+        try {
+            const raw = window.localStorage.getItem('XY_GLOBAL_CONFIG');
+            if (!raw) return null;
+            const cfg = JSON.parse(raw);
+            const payload = decodeJwtPayloadText(cfg && cfg.xy_ai_token);
+            if (!payload || payload.length > 128) return null;
+            return /^[A-Za-z0-9._-]+$/.test(payload) ? payload : null;
+        } catch (e) {
+            return null;
+        }
+    }
     function getTokenCandidates() {
         const tokens = [];
-        for (const cookie of document.cookie.split('; ')) {
+        const pushToken = (raw) => {
+            const token = normalizeBearerToken(raw);
+            if (token && !tokens.includes(token)) {
+                tokens.push(token);
+            }
+        };
+        if (PLATFORM_TOKEN_CACHE.token && (Date.now() - PLATFORM_TOKEN_CACHE.updatedAt) < PLATFORM_TOKEN_CACHE_TTL) {
+            pushToken(PLATFORM_TOKEN_CACHE.token);
+        }
+        pushToken(getAccessTokenHintFromGlobalConfig());
+        const rawCookie = document.cookie || '';
+        for (const cookie of rawCookie.split(/;\s*/)) {
+            if (!cookie) continue;
             const separatorIndex = cookie.indexOf('=');
             if (separatorIndex < 0) continue;
-            const name = cookie.slice(0, separatorIndex);
-            if (!name.includes('prd-access-token')) continue;
-            const value = cookie.slice(separatorIndex + 1);
-            if (value && !tokens.includes(value)) {
-                tokens.push(value);
+            const name = cookie.slice(0, separatorIndex).trim();
+            if (!name.toLowerCase().includes('prd-access-token')) continue;
+            let value = cookie.slice(separatorIndex + 1).trim();
+            try {
+                value = decodeURIComponent(value);
+            } catch (e) {
             }
+            if (value.startsWith('"') && value.endsWith('"') && value.length >= 2) {
+                value = value.slice(1, -1);
+            }
+            pushToken(value);
         }
         return tokens;
     }
@@ -884,20 +1018,25 @@
     }
     async function fetchPlatformApi(url, options = {}) {
         const tokens = getTokenCandidates();
+        const baseOptions = { credentials: 'include', ...options };
         if (tokens.length === 0) {
-            return fetch(url, options);
+            return fetch(url, baseOptions);
         }
         let lastResponse = null;
         for (let i = 0; i < tokens.length; i++) {
-            const headers = new Headers(options.headers || {});
+            const headers = new Headers(baseOptions.headers || {});
             headers.set('authorization', `Bearer ${tokens[i]}`);
-            const response = await fetch(url, { ...options, headers });
-            if (response.status !== 401) {
+            const response = await fetch(url, { ...baseOptions, headers });
+            if (response.ok) {
+                rememberVerifiedPlatformToken(tokens[i]);
+                return response;
+            }
+            if (response.status !== 401 && response.status !== 403) {
                 return response;
             }
             lastResponse = response;
             if (i < tokens.length - 1) {
-                console.warn(`[认证] 当前 prd-access-token 无效（可能来自其他学校），尝试下一个 (${i + 2}/${tokens.length})...`);
+                console.warn(`[认证] 当前候选凭证返回 ${response.status}，尝试下一个 (${i + 2}/${tokens.length})...`);
             }
         }
         return lastResponse;
@@ -916,15 +1055,20 @@
             const detail = (data && (data.message || data.error)) || rawText.trim().slice(0, 200) || response.statusText;
             const error = new Error(`${label}请求失败 (${response.status}): ${detail}`);
             error.status = response.status;
+            error.label = label;
+            error.detail = detail;
             error.isAuthError = response.status === 401 || response.status === 403;
+            error.authReason = response.status === 401 ? 'unauthorized' : (response.status === 403 ? 'forbidden' : null);
             error.rawText = rawText;
             throw error;
         }
         if (data === null) {
             const error = new Error(`${label}返回了非 JSON 内容: ${rawText.slice(0, 120)}`);
+            error.label = label;
+            error.status = response.status;
             if (/^\s*</.test(rawText)) {
-                error.status = response.status;
                 error.isAuthError = true;
+                error.authReason = 'html_response';
             }
             throw error;
         }
@@ -936,17 +1080,53 @@
     function isFatalSubmitStatus(status) {
         return status === 401 || status === 403;
     }
-    function showAuthErrorNotification(context = '') {
-        console.error(`[认证] ${context || '当前操作'}失败：当前学校的登录凭证无效。`);
-        showNotification(
-            `当前登录凭证无效或与学校不匹配。如果你登录过其他学校的小雅，请先退出其他学校账号，清除 ai-augmented.com 的登录状态后只登录当前学校，再刷新页面重试。`,
-            {
-                type: 'error',
-                duration: 12000,
-                keywords: ['凭证', '学校', '登录'],
-                animation: 'scale'
-            }
-        );
+    function showAuthErrorNotification(context = '', error = null) {
+        const status = error && error.status ? error.status : null;
+        const authReason = (error && error.authReason) || null;
+        const errorSource = (error && error.errorSource) || 'platform';
+        const rawDetail = (error && (error.detail || error.message)) ? String(error.detail || error.message).trim() : '';
+        const cleanDetail = rawDetail.replace(/^认证失败:\s*/, '').slice(0, 100);
+        const diagParts = [];
+        if (context) diagParts.push(context);
+        if (status) diagParts.push(`HTTP ${status}`);
+        const diagText = diagParts.join(' / ');
+        console.error(`[认证] ${context || '当前操作'}失败`, {
+            status,
+            authReason,
+            errorSource,
+            detail: rawDetail,
+            origin: window.location.origin,
+            candidateCount: getTokenCandidates().length,
+            hasCachedToken: !!PLATFORM_TOKEN_CACHE.token,
+            hasGlobalConfigHint: !!getAccessTokenHintFromGlobalConfig()
+        });
+        let message;
+        let keywords = ['登录', '刷新'];
+        if (errorSource === 'backend') {
+            message = `${cleanDetail || '服务鉴权失败'}${diagText ? `（${diagText}）` : ''}。如网络正常请刷新页面重试；若持续出现，请反馈此提示内容。`;
+            keywords = ['鉴权', '刷新'];
+        } else if (authReason === 'no_token') {
+            message = `未能读取到当前页面的小雅登录凭证${diagText ? `（${diagText}）` : ''}。请确认已登录并刷新页面重试；如使用手机浏览器，请检查是否阻止了 Cookie 或切换脚本管理器后再试。`;
+            keywords = ['凭证', 'Cookie', '刷新'];
+        } else if (authReason === 'network_or_server') {
+            message = `获取当前小雅账号信息失败${diagText ? `（${diagText}）` : ''}，可能是网络波动或平台接口暂时异常，请稍后刷新页面重试。`;
+            keywords = ['网络', '异常', '刷新'];
+        } else if (authReason === 'html_response') {
+            message = `小雅平台返回了非预期页面而非接口数据${diagText ? `（${diagText}）` : ''}，可能是登录态失效、被安全验证拦截或网络异常，请刷新页面重新登录后重试。`;
+            keywords = ['页面', '登录', '刷新'];
+        } else if (status === 403 || authReason === 'forbidden') {
+            message = `平台拒绝访问${diagText ? `（${diagText}）` : ''}${cleanDetail && !cleanDetail.startsWith('<') ? `：${cleanDetail}` : ''}。可能是无权访问该资源、登录态异常或与当前学校不匹配，请刷新页面或重新登录后重试。`;
+            keywords = ['拒绝访问', '登录', '刷新'];
+        } else {
+            message = `当前登录凭证无效或已过期${diagText ? `（${diagText}）` : ''}。请先刷新页面或重新登录；如果你曾登录过其他学校的小雅，请先退出其他学校账号并清除 ai-augmented.com 的登录状态后只登录当前学校。`;
+            keywords = ['凭证', '学校', '登录'];
+        }
+        showNotification(message, {
+            type: 'error',
+            duration: 12000,
+            keywords,
+            animation: 'scale'
+        });
     }
     async function isUrlHealthy(url) {
         try {
@@ -1023,9 +1203,9 @@
         setTimeout(() => HealthCheckVisualizer.destroy(), 3000);
         return SCRIPT_CONFIG.defaultApiBaseUrl;
     }
-    async function getCurrentUserInfo(token) {
+    async function getCurrentUserInfoDetailed(token) {
         if (!token) {
-            return null;
+            return { userInfo: null, status: null, errorType: 'no_token', detail: '' };
         }
         try {
             const cachedUserInfo = sessionStorage.getItem(`userInfo_${token}`);
@@ -1033,7 +1213,8 @@
                 try {
                     const parsedInfo = JSON.parse(cachedUserInfo);
                     if (parsedInfo && parsedInfo.cacheTimestamp && (Date.now() - parsedInfo.cacheTimestamp < 5 * 60 * 1000)) {
-                        return parsedInfo.data;
+                        rememberVerifiedPlatformToken(token);
+                        return { userInfo: parsedInfo.data, status: 200, errorType: 'ok', detail: '' };
                     }
                 } catch (e) {
                     sessionStorage.removeItem(`userInfo_${token}`);
@@ -1049,24 +1230,51 @@
             });
             if (!response.ok) {
                 console.error(`获取用户信息失败，状态码: ${response.status}`);
-                return null;
+                const errorType = (response.status === 401 || response.status === 403) ? 'auth' : 'server';
+                return { userInfo: null, status: response.status, errorType, detail: response.statusText || '' };
             }
-            const data = await response.json();
+            const rawText = await response.text();
+            let data = null;
+            try {
+                data = rawText ? JSON.parse(rawText) : null;
+            } catch (e) {
+                data = null;
+            }
+            if (!data) {
+                console.warn('获取用户信息API返回非JSON内容:', rawText.slice(0, 120));
+                return {
+                    userInfo: null,
+                    status: response.status,
+                    errorType: /^\s*</.test(rawText) ? 'html' : 'server',
+                    detail: rawText.slice(0, 120)
+                };
+            }
             if (data.code === 200 && data.result) {
+                rememberVerifiedPlatformToken(token);
                 try {
                     sessionStorage.setItem(`userInfo_${token}`, JSON.stringify({ data: data.result, cacheTimestamp: Date.now() }));
                 } catch (e) {
                     console.warn('缓存用户信息到 sessionStorage 失败:', e);
                 }
-                return data.result;
+                return { userInfo: data.result, status: 200, errorType: 'ok', detail: '' };
             } else {
                 console.warn('获取用户信息API返回非成功状态:', data);
-                return null;
+                const bizAuth = data.code === 401 || data.code === 403;
+                return {
+                    userInfo: null,
+                    status: bizAuth ? data.code : response.status,
+                    errorType: bizAuth ? 'auth' : 'server',
+                    detail: data.msg || data.message || ''
+                };
             }
         } catch (error) {
             console.error('获取用户信息时发生网络错误:', error);
-            return null;
+            return { userInfo: null, status: null, errorType: 'network', detail: error && error.message ? error.message : '' };
         }
+    }
+    async function getCurrentUserInfo(token) {
+        const result = await getCurrentUserInfoDetailed(token);
+        return result.userInfo;
     }
     async function pickActivationAccount(boundUserId) {
         let mismatchedUserId = null;
@@ -2605,9 +2813,15 @@
         let currentUserInfo = null;
         let mismatchedUserId = null;
         let foundAnyUser = false;
-        for (const candidate of getTokenCandidates()) {
-            const candidateInfo = await getCurrentUserInfo(candidate);
-            if (!candidateInfo || !candidateInfo.id) continue;
+        let lastUserInfoFailure = null;
+        const candidates = getTokenCandidates();
+        for (const candidate of candidates) {
+            const result = await getCurrentUserInfoDetailed(candidate);
+            const candidateInfo = result.userInfo;
+            if (!candidateInfo || !candidateInfo.id) {
+                lastUserInfoFailure = result;
+                continue;
+            }
             foundAnyUser = true;
             if (String(candidateInfo.id) !== String(boundUserId)) {
                 mismatchedUserId = String(candidateInfo.id);
@@ -2620,8 +2834,21 @@
         }
         if (!xiaoyaToken || !currentUserInfo) {
             if (!foundAnyUser) {
-                showAuthErrorNotification('获取当前用户信息');
-                throw new Error('当前学校的登录凭证无效，请重新登录当前学校后再试');
+                let failureError;
+                if (candidates.length === 0) {
+                    failureError = { authReason: 'no_token' };
+                } else if (lastUserInfoFailure && (lastUserInfoFailure.errorType === 'network' || lastUserInfoFailure.errorType === 'server')) {
+                    failureError = { status: lastUserInfoFailure.status, authReason: 'network_or_server', detail: lastUserInfoFailure.detail };
+                } else if (lastUserInfoFailure && lastUserInfoFailure.errorType === 'html') {
+                    failureError = { status: lastUserInfoFailure.status, authReason: 'html_response', detail: lastUserInfoFailure.detail };
+                } else {
+                    const status = lastUserInfoFailure ? lastUserInfoFailure.status : null;
+                    failureError = { status, authReason: status === 403 ? 'forbidden' : 'unauthorized', detail: lastUserInfoFailure ? lastUserInfoFailure.detail : '' };
+                }
+                showAuthErrorNotification('获取当前用户信息', failureError);
+                const err = new Error('获取当前小雅账号信息失败');
+                err.alreadyNotified = true;
+                throw err;
             }
             showNotification(
                 `当前登录账号与激活绑定账号不一致（绑定: ${boundUserId}${mismatchedUserId ? `，当前: ${mismatchedUserId}` : ''}），已中止请求以保护账号。请登录激活时使用的账号后再试。`,
@@ -2672,6 +2899,13 @@
                 console.error(`[欺诈检测] 后端返回欺诈警告: ${errorMessage}`);
                 throw new Error(`欺诈行为警告: ${errorMessage}`);
             }
+            if (errorData.code === 'BLACKLISTED') {
+                const blacklistedError = new Error(errorMessage || '你的账户已被禁用，无法操作。');
+                blacklistedError.isBackendError = true;
+                blacklistedError.code = 'BLACKLISTED';
+                blacklistedError.status = response.status;
+                throw blacklistedError;
+            }
             if (errorMessage.includes('重新激活') || errorMessage.includes('用户不存在') || errorMessage.includes('已到期')) {
                 console.warn(`后端要求重新激活: ${errorMessage}`);
                 throw new Error(`凭证失效，请重新激活: ${errorMessage}`);
@@ -2707,6 +2941,8 @@
                 }
                 const authError = new Error(`认证失败: ${errorMessage}`);
                 authError.isAuthError = true;
+                authError.errorSource = 'backend';
+                authError.detail = errorMessage;
                 authError.status = response.status;
                 throw authError;
             }
@@ -2998,15 +3234,21 @@
         if (!boundUserId) {
             return true;
         }
-        if (getTokenCandidates().length === 0) {
-            showNotification('无法获取小雅 Token，请刷新页面或重新登录。', { type: 'error' });
+        const candidates = getTokenCandidates();
+        if (candidates.length === 0) {
+            showAuthErrorNotification('账号校验', { authReason: 'no_token' });
             return false;
         }
         let currentUserInfo = null;
         let mismatchedUserId = null;
-        for (const candidate of getTokenCandidates()) {
-            const candidateInfo = await getCurrentUserInfo(candidate);
-            if (!candidateInfo || !candidateInfo.id) continue;
+        let lastUserInfoFailure = null;
+        for (const candidate of candidates) {
+            const result = await getCurrentUserInfoDetailed(candidate);
+            const candidateInfo = result.userInfo;
+            if (!candidateInfo || !candidateInfo.id) {
+                lastUserInfoFailure = result;
+                continue;
+            }
             if (String(candidateInfo.id) === String(boundUserId)) {
                 currentUserInfo = candidateInfo;
                 break;
@@ -3036,7 +3278,16 @@
                     setTimeout(() => promptActivationCode(), 300);
                 }
             } else {
-                showAuthErrorNotification('获取当前用户信息');
+                let failureError;
+                if (lastUserInfoFailure && (lastUserInfoFailure.errorType === 'network' || lastUserInfoFailure.errorType === 'server')) {
+                    failureError = { status: lastUserInfoFailure.status, authReason: 'network_or_server', detail: lastUserInfoFailure.detail };
+                } else if (lastUserInfoFailure && lastUserInfoFailure.errorType === 'html') {
+                    failureError = { status: lastUserInfoFailure.status, authReason: 'html_response', detail: lastUserInfoFailure.detail };
+                } else {
+                    const status = lastUserInfoFailure ? lastUserInfoFailure.status : null;
+                    failureError = { status, authReason: status === 403 ? 'forbidden' : 'unauthorized', detail: lastUserInfoFailure ? lastUserInfoFailure.detail : '' };
+                }
+                showAuthErrorNotification('获取当前用户信息', failureError);
             }
             return false;
         }
@@ -3157,8 +3408,9 @@
     function hasPaperUi() {
         const text = document.body ? document.body.innerText : '';
         if (!text) return false;
-        return /(卷面情况|允许提交|开始答题|公布结果)/.test(text)
-            && /(单选题|多选题|判断题|简答题|填空题)/.test(text);
+        const hasWorkflowHints = /(卷面情况|允许提交|开始答题|公布结果)/.test(text);
+        const hasQuestionTypeHints = /(单选题|多选题|判断题|简答题|填空题|Single Choice|Multiple Choice|True\/False)/i.test(text);
+        return hasWorkflowHints && (hasQuestionTypeHints || getDomQuestionIds().length > 0);
     }
     const taskPageProbeCache = new Map();
     async function probeTaskResource(nodeId) {
@@ -3235,7 +3487,7 @@
             capturedContext: PAGE_CONTEXT
         });
         if (getTokenCandidates().length === 0) {
-            showAuthErrorNotification('页面识别');
+            showAuthErrorNotification('页面识别', { authReason: 'no_token' });
             return;
         }
         showNotification(`当前页面未识别为作业/测验页（课程ID: ${context.groupId || '未解析'}，任务ID: ${context.nodeId || '未解析'}）。请在答题页重试，并查看控制台 [页面识别] 日志。`, {
@@ -3611,7 +3863,14 @@
         } catch (error) {
             console.error('获取或处理答案失败:', error);
             const errorMessage = String(error && error.message ? error.message : error).toLowerCase();
-            if (error.isIdentityMismatch) {
+            if (error.alreadyNotified) {
+            } else if (error.isBackendError) {
+                showNotification(error.message, {
+                    type: 'error',
+                    duration: 12000,
+                    animation: 'scale'
+                });
+            } else if (error.isIdentityMismatch) {
                 showNotification(error.message, {
                     type: 'warning',
                     duration: 14000,
@@ -3619,7 +3878,7 @@
                     animation: 'scale'
                 });
             } else if (isAuthError(error)) {
-                showAuthErrorNotification('获取答案');
+                showAuthErrorNotification('获取答案', error);
             } else if (errorMessage.includes('欺诈行为警告')) {
                 showNotification('检测到异常操作，你的授权已被吊销，请重新激活。', { type: 'error', duration: 8000, animation: 'scale' });
                 localStorage.removeItem('xiaoya_access_token'); localStorage.removeItem('xiaoya_refresh_token'); setTimeout(promptActivationCode, 1000);
@@ -4295,7 +4554,7 @@
         } catch (error) {
             console.error('获取已提交作业失败:', error);
             if (isAuthError(error)) {
-                showAuthErrorNotification('获取已提交作业');
+                showAuthErrorNotification('获取已提交作业', error);
             } else {
                 showNotification('获取已提交作业失败：' + (error.message || '未知错误'), {
                     type: 'error',
@@ -4416,7 +4675,7 @@
                     animation: 'scale'
                 });
             } else if (isAuthError(error)) {
-                showAuthErrorNotification('填写答案');
+                showAuthErrorNotification('填写答案', error);
             } else {
                 showNotification('填写答案失败，请查看控制台。', {
                     type: 'error',
