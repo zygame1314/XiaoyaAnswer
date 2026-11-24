@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         小雅答答答
 // @license      MIT
-// @version      2.10.16
+// @version      2.10.17
 // @description  小雅平台学习助手 📖，智能整理归纳学习资料 📚，辅助完成练习 💪，并提供便捷的查阅和修改功能 📝！
 // @author       Yi
 // @match        https://*.ai-augmented.com/*
@@ -11,6 +11,7 @@
 // @grant        GM_deleteValue
 // @grant        GM_xmlhttpRequest
 // @grant        GM_info
+// @grant        unsafeWindow
 // @run-at       document-start
 // @connect      *
 // @require      https://cdn.jsdmirror.com/npm/katex@0.16.9/dist/katex.min.js
@@ -38,6 +39,8 @@
         updatedAt: 0
     };
     const PLATFORM_TOKEN_CACHE_TTL = 30 * 60 * 1000;
+    const PLATFORM_COURSE_ACCESS_CACHE = new Map();
+    const PLATFORM_COURSE_ACCESS_TTL = 10 * 60 * 1000;
     function normalizeBearerToken(raw) {
         if (typeof raw !== 'string') return null;
         let token = raw.trim();
@@ -54,24 +57,43 @@
         PLATFORM_TOKEN_CACHE.token = token;
         PLATFORM_TOKEN_CACHE.updatedAt = Date.now();
     }
-    function extractBearerTokenFromHeaders(headers) {
+    function rememberCourseAccessToken(groupId, rawToken) {
+        if (typeof rawToken !== 'string') return;
+        const token = rawToken.trim();
+        if (!token || token.length > 2048 || /[\s\r\n]/.test(token)) return;
+        const key = groupId ? String(groupId) : '*';
+        PLATFORM_COURSE_ACCESS_CACHE.set(key, { token, updatedAt: Date.now() });
+    }
+    function getCachedCourseAccessToken(groupId) {
+        const now = Date.now();
+        const keys = groupId ? [String(groupId), '*'] : ['*'];
+        for (const key of keys) {
+            const entry = PLATFORM_COURSE_ACCESS_CACHE.get(key);
+            if (entry && (now - entry.updatedAt) < PLATFORM_COURSE_ACCESS_TTL) {
+                return entry.token;
+            }
+        }
+        return null;
+    }
+    function extractHeaderValue(headers, targetName) {
         if (!headers) return null;
+        const lowerTarget = targetName.toLowerCase();
         try {
             if (typeof Headers !== 'undefined' && headers instanceof Headers) {
-                return normalizeBearerToken(headers.get('authorization'));
+                return headers.get(lowerTarget);
             }
             if (Array.isArray(headers)) {
                 for (const entry of headers) {
-                    if (Array.isArray(entry) && typeof entry[0] === 'string' && entry[0].toLowerCase() === 'authorization') {
-                        return normalizeBearerToken(entry[1]);
+                    if (Array.isArray(entry) && typeof entry[0] === 'string' && entry[0].toLowerCase() === lowerTarget) {
+                        return entry[1];
                     }
                 }
                 return null;
             }
             if (typeof headers === 'object') {
                 for (const key of Object.keys(headers)) {
-                    if (key.toLowerCase() === 'authorization') {
-                        return normalizeBearerToken(headers[key]);
+                    if (key.toLowerCase() === lowerTarget) {
+                        return headers[key];
                     }
                 }
             }
@@ -79,13 +101,29 @@
         }
         return null;
     }
-    function extractBearerTokenFromFetchArgs(input, init) {
-        const fromInit = extractBearerTokenFromHeaders(init && init.headers);
+    function extractHeaderFromFetchArgs(input, init, targetName) {
+        const fromInit = extractHeaderValue(init && init.headers, targetName);
         if (fromInit) return fromInit;
         if (typeof Request !== 'undefined' && input instanceof Request) {
-            return extractBearerTokenFromHeaders(input.headers);
+            return extractHeaderValue(input.headers, targetName);
         }
         return null;
+    }
+    function extractBearerTokenFromFetchArgs(input, init) {
+        return normalizeBearerToken(extractHeaderFromFetchArgs(input, init, 'authorization'));
+    }
+    function extractGroupIdHintFromUrl(urlStr) {
+        try {
+            const urlObj = new URL(String(urlStr), window.location.origin);
+            const qp = urlObj.searchParams.get('group_id') || urlObj.searchParams.get('groupId');
+            if (qp && /^\d{6,}$/.test(qp.trim())) return qp.trim();
+        } catch (e) {
+        }
+        try {
+            return getGroupIDFromUrl(window.location.href);
+        } catch (e) {
+            return null;
+        }
     }
     const localStorage = {
         getItem: (key) => GM_getValue(key, null),
@@ -94,9 +132,7 @@
     };
     const RuntimePatcher = {
         _nativeRefs: {
-            dispatchEvent: window.dispatchEvent,
-            removeItem: Storage.prototype.removeItem,
-            register: navigator.serviceWorker.register,
+            register: (typeof navigator !== 'undefined' && navigator.serviceWorker) ? navigator.serviceWorker.register : null,
             fetch: window.fetch,
             xhrOpen: XMLHttpRequest.prototype.open,
             xhrSend: XMLHttpRequest.prototype.send,
@@ -105,7 +141,7 @@
         },
         _decode: (str) => decodeURIComponent(escape(atob(str))),
         _clearStaleWorkers: function () {
-            if ('serviceWorker' in navigator) {
+            if ('serviceWorker' in navigator && navigator.serviceWorker && typeof navigator.serviceWorker.getRegistrations === 'function') {
                 const swTargetName = this._decode('Z2xvYmFsLXNlcnZpY2Utd29ya2VyLmpz');
                 navigator.serviceWorker.getRegistrations().then(registrations => {
                     for (let registration of registrations) {
@@ -118,22 +154,14 @@
                             });
                         }
                     }
-                });
+                }).catch(() => {});
             }
-        },
-        _applyEventShim: function () {
-            const nativeDispatch = this._nativeRefs.dispatchEvent;
-            const patchedDispatch = function (...args) {
-                return nativeDispatch.apply(window, args);
-            };
-            Object.defineProperty(patchedDispatch, 'toString', {
-                value: () => 'function dispatchEvent() { [native code] }',
-                configurable: true,
-            });
-            window.dispatchEvent = patchedDispatch;
         },
         _manageWorkerLifecycle: function () {
             const nativeRegister = this._nativeRefs.register;
+            if (!('serviceWorker' in navigator) || !navigator.serviceWorker || typeof nativeRegister !== 'function') {
+                return;
+            }
             const swTargetName = this._decode('Z2xvYmFsLXNlcnZpY2Utd29ya2VyLmpz');
             navigator.serviceWorker.register = function (scriptURL, options) {
                 if (typeof scriptURL === 'string' && scriptURL.includes(swTargetName)) {
@@ -278,6 +306,8 @@
                 else if (input instanceof Request) { urlStr = input.url; }
                 else { urlStr = String(input); }
                 let capturedSameOriginToken = null;
+                let capturedCourseAccess = null;
+                let capturedGroupId = null;
                 let shouldWatchSubmit = false;
                 try {
                     rememberPageContext(urlStr);
@@ -292,6 +322,8 @@
                     }
                     if (urlObj.origin === window.location.origin && urlObj.pathname.startsWith('/api/')) {
                         capturedSameOriginToken = extractBearerTokenFromFetchArgs(input, init);
+                        capturedCourseAccess = extractHeaderFromFetchArgs(input, init, 'x-course-access');
+                        if (capturedCourseAccess) capturedGroupId = extractGroupIdHintFromUrl(urlStr);
                     }
                     const requestMethod = ((init && init.method) || (input instanceof Request && input.method) || '').toUpperCase();
                     if (urlStr.includes(SUBMIT_URL_SIGNATURE) && requestMethod === 'POST') {
@@ -302,10 +334,11 @@
                     console.warn('[运行时] 解析 fetch 目标 URL 时发生异常，回退至原生 fetch：', e);
                 }
                 const originalFetchPromise = nativeFetch.apply(window, arguments);
-                if (capturedSameOriginToken) {
+                if (capturedSameOriginToken || capturedCourseAccess) {
                     originalFetchPromise.then(response => {
                         if (response && response.ok) {
-                            rememberVerifiedPlatformToken(capturedSameOriginToken);
+                            if (capturedSameOriginToken) rememberVerifiedPlatformToken(capturedSameOriginToken);
+                            if (capturedCourseAccess) rememberCourseAccessToken(capturedGroupId, capturedCourseAccess);
                         }
                     }).catch(() => {});
                 }
@@ -333,6 +366,7 @@
             const hookedXhrOpen = function (method, url, ...rest) {
                 this._requestURL = url;
                 this._capturedBearerToken = null;
+                this._capturedCourseAccess = null;
                 rememberPageContext(url);
                 return self._nativeRefs.xhrOpen.apply(this, arguments);
             };
@@ -340,10 +374,13 @@
             if (self._nativeRefs.xhrSetRequestHeader) {
                 const hookedXhrSetRequestHeader = function (header, value) {
                     try {
-                        if (typeof header === 'string' && header.toLowerCase() === 'authorization') {
-                            const token = normalizeBearerToken(String(value || ''));
-                            if (token) {
-                                this._capturedBearerToken = token;
+                        if (typeof header === 'string') {
+                            const lower = header.toLowerCase();
+                            if (lower === 'authorization') {
+                                const token = normalizeBearerToken(String(value || ''));
+                                if (token) this._capturedBearerToken = token;
+                            } else if (lower === 'x-course-access' && value) {
+                                this._capturedCourseAccess = String(value).trim();
                             }
                         }
                     } catch (e) {
@@ -375,11 +412,14 @@
                             this.dispatchEvent(new Event('load'));
                             return;
                         }
-                        if (this._capturedBearerToken && urlObj.origin === window.location.origin && urlObj.pathname.startsWith('/api/')) {
+                        if ((this._capturedBearerToken || this._capturedCourseAccess) && urlObj.origin === window.location.origin && urlObj.pathname.startsWith('/api/')) {
                             const capturedToken = this._capturedBearerToken;
+                            const capturedAccess = this._capturedCourseAccess;
+                            const capturedGroup = capturedAccess ? extractGroupIdHintFromUrl(this._requestURL) : null;
                             this.addEventListener('load', function () {
                                 if (this.status >= 200 && this.status < 300) {
-                                    rememberVerifiedPlatformToken(capturedToken);
+                                    if (capturedToken) rememberVerifiedPlatformToken(capturedToken);
+                                    if (capturedAccess) rememberCourseAccessToken(capturedGroup, capturedAccess);
                                 }
                             }, { once: true });
                         }
@@ -443,12 +483,114 @@
                 };
                 protectProperty(navigator, 'sendBeacon', hookedSendBeacon);
             }
+            try {
+                const pageWindow = (typeof unsafeWindow !== 'undefined' && unsafeWindow) ? unsafeWindow : null;
+                if (pageWindow && pageWindow !== window) {
+                    if (typeof pageWindow.fetch === 'function' && pageWindow.fetch !== window.fetch) {
+                        const pageNativeFetch = pageWindow.fetch.bind(pageWindow);
+                        const pageHookedFetch = function (input, init) {
+                            let capturedToken = null;
+                            let capturedAccess = null;
+                            let capturedGroup = null;
+                            try {
+                                const urlStr = typeof input === 'string'
+                                    ? input
+                                    : (input && typeof input.url === 'string' ? input.url : String(input));
+                                rememberPageContext(urlStr);
+                                const urlObj = new URL(urlStr, window.location.origin);
+                                if (urlObj.origin === window.location.origin && urlObj.pathname.startsWith('/api/')) {
+                                    capturedToken = extractBearerTokenFromFetchArgs(input, init);
+                                    capturedAccess = extractHeaderFromFetchArgs(input, init, 'x-course-access');
+                                    if (capturedAccess) capturedGroup = extractGroupIdHintFromUrl(urlStr);
+                                }
+                            } catch (e) {
+                            }
+                            const promise = pageNativeFetch.apply(pageWindow, arguments);
+                            if (capturedToken || capturedAccess) {
+                                promise.then(res => {
+                                    if (res && res.ok) {
+                                        if (capturedToken) rememberVerifiedPlatformToken(capturedToken);
+                                        if (capturedAccess) rememberCourseAccessToken(capturedGroup, capturedAccess);
+                                    }
+                                }).catch(() => {});
+                            }
+                            return promise;
+                        };
+                        makeNative(pageHookedFetch, 'fetch');
+                        pageWindow.fetch = pageHookedFetch;
+                    }
+                    const pageXhrProto = pageWindow.XMLHttpRequest && pageWindow.XMLHttpRequest.prototype;
+                    if (pageXhrProto && pageXhrProto !== XMLHttpRequest.prototype) {
+                        const pageNativeOpen = pageXhrProto.open;
+                        const pageNativeSetHeader = pageXhrProto.setRequestHeader;
+                        const pageNativeSend = pageXhrProto.send;
+                        if (typeof pageNativeOpen === 'function') {
+                            const wrappedOpen = function (method, url) {
+                                try {
+                                    this._xyPageUrl = url;
+                                    this._xyPageBearer = null;
+                                    this._xyPageCourseAccess = null;
+                                    rememberPageContext(url);
+                                } catch (e) {
+                                }
+                                return pageNativeOpen.apply(this, arguments);
+                            };
+                            makeNative(wrappedOpen, 'open');
+                            pageXhrProto.open = wrappedOpen;
+                        }
+                        if (typeof pageNativeSetHeader === 'function') {
+                            const wrappedSetHeader = function (header, value) {
+                                try {
+                                    if (typeof header === 'string') {
+                                        const lower = header.toLowerCase();
+                                        if (lower === 'authorization') {
+                                            const token = normalizeBearerToken(String(value || ''));
+                                            if (token) this._xyPageBearer = token;
+                                        } else if (lower === 'x-course-access' && value) {
+                                            this._xyPageCourseAccess = String(value).trim();
+                                        }
+                                    }
+                                } catch (e) {
+                                }
+                                return pageNativeSetHeader.apply(this, arguments);
+                            };
+                            makeNative(wrappedSetHeader, 'setRequestHeader');
+                            pageXhrProto.setRequestHeader = wrappedSetHeader;
+                        }
+                        if (typeof pageNativeSend === 'function') {
+                            const wrappedSend = function () {
+                                try {
+                                    if (this._xyPageUrl && (this._xyPageBearer || this._xyPageCourseAccess)) {
+                                        const urlObj = new URL(this._xyPageUrl, window.location.origin);
+                                        if (urlObj.origin === window.location.origin && urlObj.pathname.startsWith('/api/')) {
+                                            const token = this._xyPageBearer;
+                                            const access = this._xyPageCourseAccess;
+                                            const group = access ? extractGroupIdHintFromUrl(this._xyPageUrl) : null;
+                                            this.addEventListener('load', function () {
+                                                if (this.status >= 200 && this.status < 300) {
+                                                    if (token) rememberVerifiedPlatformToken(token);
+                                                    if (access) rememberCourseAccessToken(group, access);
+                                                }
+                                            }, { once: true });
+                                        }
+                                    }
+                                } catch (e) {
+                                }
+                                return pageNativeSend.apply(this, arguments);
+                            };
+                            makeNative(wrappedSend, 'send');
+                            pageXhrProto.send = wrappedSend;
+                        }
+                    }
+                }
+            } catch (e) {
+                console.warn('[运行时] 注册页面级鉴权观察器失败（已忽略）:', e);
+            }
             console.log('[运行时] 网络请求拦截器已部署。');
         },
         run: function () {
             console.log('[运行时] 正在初始化运行时补丁...');
             this._clearStaleWorkers();
-            this._applyEventShim();
             this._manageWorkerLifecycle();
             this._setupUIMonitor();
             this._initNetworkInterceptor();
@@ -964,36 +1106,54 @@
             return null;
         }
     }
-    function getTokenCandidates() {
+    function parseCookieTokenValue(rawValue) {
+        let value = String(rawValue || '').trim();
+        try {
+            value = decodeURIComponent(value);
+        } catch (e) {
+        }
+        if (value.startsWith('"') && value.endsWith('"') && value.length >= 2) {
+            value = value.slice(1, -1);
+        }
+        return normalizeBearerToken(value);
+    }
+    function getTokenCandidatesDetailed() {
         const tokens = [];
-        const pushToken = (raw) => {
+        const sources = [];
+        const pushToken = (raw, sourceLabel) => {
             const token = normalizeBearerToken(raw);
             if (token && !tokens.includes(token)) {
                 tokens.push(token);
+                sources.push(sourceLabel);
             }
         };
         if (PLATFORM_TOKEN_CACHE.token && (Date.now() - PLATFORM_TOKEN_CACHE.updatedAt) < PLATFORM_TOKEN_CACHE_TTL) {
-            pushToken(PLATFORM_TOKEN_CACHE.token);
+            pushToken(PLATFORM_TOKEN_CACHE.token, 'captured');
         }
-        pushToken(getAccessTokenHintFromGlobalConfig());
+        pushToken(getAccessTokenHintFromGlobalConfig(), 'global');
         const rawCookie = document.cookie || '';
+        const fallbackCookies = [];
         for (const cookie of rawCookie.split(/;\s*/)) {
             if (!cookie) continue;
             const separatorIndex = cookie.indexOf('=');
             if (separatorIndex < 0) continue;
             const name = cookie.slice(0, separatorIndex).trim();
-            if (!name.toLowerCase().includes('prd-access-token')) continue;
-            let value = cookie.slice(separatorIndex + 1).trim();
-            try {
-                value = decodeURIComponent(value);
-            } catch (e) {
+            const lowerName = name.toLowerCase();
+            const value = parseCookieTokenValue(cookie.slice(separatorIndex + 1));
+            if (!value) continue;
+            if (lowerName.includes('prd-access-token')) {
+                pushToken(value, `cookie:${name}`);
+            } else if ((lowerName.includes('access-token') || lowerName.includes('access_token')) && !lowerName.includes('refresh')) {
+                fallbackCookies.push({ name, value });
             }
-            if (value.startsWith('"') && value.endsWith('"') && value.length >= 2) {
-                value = value.slice(1, -1);
-            }
-            pushToken(value);
         }
-        return tokens;
+        for (const item of fallbackCookies) {
+            pushToken(item.value, `cookie-fb:${item.name}`);
+        }
+        return { tokens, sources };
+    }
+    function getTokenCandidates() {
+        return getTokenCandidatesDetailed().tokens;
     }
     function getToken() {
         const tokens = getTokenCandidates();
@@ -1016,9 +1176,45 @@
         }
         return tokens[0];
     }
+    async function fetchCourseAccessToken(groupId, authToken) {
+        if (!groupId || !authToken) return null;
+        try {
+            const visitRes = await fetch(`${window.location.origin}/api/jx-iresource/statistics/group/visit`, {
+                method: 'POST',
+                credentials: 'include',
+                headers: {
+                    'authorization': `Bearer ${authToken}`,
+                    'content-type': 'application/json; charset=UTF-8'
+                },
+                body: JSON.stringify({ group_id: String(groupId), role_type: 'normal' })
+            });
+            if (!visitRes.ok) return null;
+            const visitData = await visitRes.json();
+            const siteId = visitData && visitData.success && visitData.data ? visitData.data.site_id : null;
+            if (!siteId) return null;
+            const authRes = await fetch(`${window.location.origin}/api/jx-iresource/group/access/authorization?site_id=${encodeURIComponent(siteId)}&role_type=4`, {
+                method: 'GET',
+                credentials: 'include',
+                headers: {
+                    'authorization': `Bearer ${authToken}`
+                }
+            });
+            if (!authRes.ok) return null;
+            const authData = await authRes.json();
+            const accessGroupToken = authData && authData.data ? authData.data.access_group_token : null;
+            if (accessGroupToken) {
+                rememberCourseAccessToken(groupId, accessGroupToken);
+                return accessGroupToken;
+            }
+        } catch (e) {
+            console.warn('[认证] 获取课程访问令牌 X-Course-Access 失败:', e);
+        }
+        return null;
+    }
     async function fetchPlatformApi(url, options = {}) {
         const tokens = getTokenCandidates();
-        const baseOptions = { credentials: 'include', ...options };
+        const { _skipCourseAccessRetry, ...fetchOpts } = options;
+        const baseOptions = { credentials: 'include', ...fetchOpts };
         if (tokens.length === 0) {
             return fetch(url, baseOptions);
         }
@@ -1037,6 +1233,37 @@
             lastResponse = response;
             if (i < tokens.length - 1) {
                 console.warn(`[认证] 当前候选凭证返回 ${response.status}，尝试下一个 (${i + 2}/${tokens.length})...`);
+            }
+        }
+        if (!_skipCourseAccessRetry && lastResponse && (lastResponse.status === 401 || lastResponse.status === 403) && String(url).includes('/api/jx-iresource/')) {
+            const groupId = extractGroupIdHintFromUrl(url);
+            if (groupId) {
+                const cachedAccess = getCachedCourseAccessToken(groupId);
+                for (let i = 0; i < tokens.length; i++) {
+                    const courseAccessToken = cachedAccess || await fetchCourseAccessToken(groupId, tokens[i]);
+                    if (!courseAccessToken) continue;
+                    const headers = new Headers(baseOptions.headers || {});
+                    headers.set('authorization', `Bearer ${tokens[i]}`);
+                    headers.set('x-course-access', courseAccessToken);
+                    const retryRes = await fetch(url, { ...baseOptions, headers });
+                    if (retryRes.ok) {
+                        rememberVerifiedPlatformToken(tokens[i]);
+                        return retryRes;
+                    }
+                    lastResponse = retryRes;
+                    if (cachedAccess) {
+                        const freshAccess = await fetchCourseAccessToken(groupId, tokens[i]);
+                        if (freshAccess && freshAccess !== cachedAccess) {
+                            headers.set('x-course-access', freshAccess);
+                            const freshRetry = await fetch(url, { ...baseOptions, headers });
+                            if (freshRetry.ok) {
+                                rememberVerifiedPlatformToken(tokens[i]);
+                                return freshRetry;
+                            }
+                            lastResponse = freshRetry;
+                        }
+                    }
+                }
             }
         }
         return lastResponse;
@@ -1084,19 +1311,28 @@
         const status = error && error.status ? error.status : null;
         const authReason = (error && error.authReason) || null;
         const errorSource = (error && error.errorSource) || 'platform';
+        const errorLabel = (error && error.label && error.label !== context) ? error.label : '';
         const rawDetail = (error && (error.detail || error.message)) ? String(error.detail || error.message).trim() : '';
         const cleanDetail = rawDetail.replace(/^认证失败:\s*/, '').slice(0, 100);
+        const { tokens, sources } = getTokenCandidatesDetailed();
         const diagParts = [];
-        if (context) diagParts.push(context);
+        if (context) diagParts.push(errorLabel ? `${context}·${errorLabel}` : context);
+        else if (errorLabel) diagParts.push(errorLabel);
         if (status) diagParts.push(`HTTP ${status}`);
+        if (errorSource !== 'backend') {
+            diagParts.push(window.location.host);
+            diagParts.push(`候选${tokens.length}${sources.length ? `[${sources.slice(0, 3).join(',')}]` : ''}`);
+        }
         const diagText = diagParts.join(' / ');
         console.error(`[认证] ${context || '当前操作'}失败`, {
             status,
             authReason,
             errorSource,
+            label: errorLabel,
             detail: rawDetail,
             origin: window.location.origin,
-            candidateCount: getTokenCandidates().length,
+            candidateCount: tokens.length,
+            candidateSources: sources,
             hasCachedToken: !!PLATFORM_TOKEN_CACHE.token,
             hasGlobalConfigHint: !!getAccessTokenHintFromGlobalConfig()
         });
@@ -1118,7 +1354,8 @@
             message = `平台拒绝访问${diagText ? `（${diagText}）` : ''}${cleanDetail && !cleanDetail.startsWith('<') ? `：${cleanDetail}` : ''}。可能是无权访问该资源、登录态异常或与当前学校不匹配，请刷新页面或重新登录后重试。`;
             keywords = ['拒绝访问', '登录', '刷新'];
         } else {
-            message = `当前登录凭证无效或已过期${diagText ? `（${diagText}）` : ''}。请先刷新页面或重新登录；如果你曾登录过其他学校的小雅，请先退出其他学校账号并清除 ai-augmented.com 的登录状态后只登录当前学校。`;
+            const shortDetail = cleanDetail && !cleanDetail.startsWith('<') ? `：${cleanDetail.slice(0, 50)}` : '';
+            message = `当前登录凭证无效或已过期${diagText ? `（${diagText}）` : ''}${shortDetail}。请先刷新页面或重新登录；如果你曾登录过其他学校的小雅，请先退出其他学校账号并清除 ai-augmented.com 的登录状态后只登录当前学校。`;
             keywords = ['凭证', '学校', '登录'];
         }
         showNotification(message, {
@@ -1477,7 +1714,7 @@
                 id: 'get-answers',
                 icon: '🕷️',
                 text: '获取答案 / 激活',
-                onClick: () => getAndStoreAnswers(true),
+                onClick: () => getAndStoreAnswers(),
                 type: 'button',
                 special: true
             },
@@ -1576,7 +1813,7 @@
                 text: '贡献当前作业',
                 onClick: async () => {
                     if (!(await checkAccountConsistency())) {
-                        showNotification('操作中止：当前登录账号与脚本激活账号不一致。', { type: 'error', duration: 5000 });
+                        console.warn('[操作中止] 账号校验未通过，已取消手动贡献。');
                         return;
                     }
                     if (!(await isTaskPage())) {
@@ -2771,9 +3008,15 @@
                         origin: window.location.origin
                     })
                 });
-                const data = await res.json();
+                const rawText = await res.text();
+                let data = null;
+                try {
+                    data = rawText ? JSON.parse(rawText) : null;
+                } catch (e) {
+                    data = null;
+                }
                 setLoadingState(false);
-                if (data.success) {
+                if (res.ok && data && data.success) {
                     localStorage.setItem('xiaoya_access_token', data.access_token);
                     localStorage.setItem('xiaoya_refresh_token', data.refresh_token);
                     localStorage.setItem('xiaoya_bound_user_id', userInfo.id.toString());
@@ -2781,7 +3024,8 @@
                     closeModal();
                     getAndStoreAnswers();
                 } else {
-                    showNotification(`激活失败: ${data.error}`, { type: 'error' });
+                    const errMsg = (data && (data.error || data.message)) || rawText.trim().slice(0, 120) || `HTTP ${res.status}`;
+                    showNotification(`激活失败: ${errMsg}`, { type: 'error' });
                 }
             } catch (err) {
                 setLoadingState(false);
@@ -2859,7 +3103,10 @@
                     animation: 'scale'
                 }
             );
-            throw new Error('账号不一致，已中止请求以保护账号');
+            const mismatchErr = new Error('账号不一致，已中止请求以保护账号');
+            mismatchErr.alreadyNotified = true;
+            mismatchErr.isIdentityMismatch = true;
+            throw mismatchErr;
         }
         const finalPayload = {
             ...payload,
@@ -3497,7 +3744,7 @@
             animation: 'scale'
         });
     }
-    async function getAnswerRecordId(nodeId, groupId, token) {
+    async function getAnswerRecordId(nodeId, groupId) {
         try {
             const status = await checkAssignmentStatus(groupId, nodeId);
             if (status) {
@@ -3569,13 +3816,12 @@
             notifyInvalidTaskPage();
             return false;
         }
-        const token = getToken();
-        if (!token) {
-            showNotification('无法获取token，请确保已登录。', { type: 'error' });
+        if (getTokenCandidates().length === 0) {
+            showAuthErrorNotification('获取答案', { authReason: 'no_token' });
             return false;
         }
         if (!(await checkAccountConsistency())) {
-            console.warn("[操作中止] 因账号不一致，已取消获取答案。");
+            console.warn("[操作中止] 账号校验未通过，已取消获取答案。");
             return false;
         }
         const currentUrl = window.location.href;
@@ -3611,7 +3857,7 @@
             let questionsFromResource = JSON.parse(JSON.stringify(resourceData.data.resource.questions || []));
             const isSamplingPaper = Number(resourceData.data.resource.is_sampling) === 2;
             progress.update(7, 100, '正在获取答题记录', '%');
-            const recordId = await getAnswerRecordId(node_id, group_id, token);
+            const recordId = await getAnswerRecordId(node_id, group_id);
             localStorage.setItem('recordId', recordId || '');
             progress.update(9, 100, '答题记录获取成功', '%');
             let samplingQuestionIds = [];
@@ -3881,7 +4127,10 @@
                 showAuthErrorNotification('获取答案', error);
             } else if (errorMessage.includes('欺诈行为警告')) {
                 showNotification('检测到异常操作，你的授权已被吊销，请重新激活。', { type: 'error', duration: 8000, animation: 'scale' });
-                localStorage.removeItem('xiaoya_access_token'); localStorage.removeItem('xiaoya_refresh_token'); setTimeout(promptActivationCode, 1000);
+                localStorage.removeItem('xiaoya_access_token');
+                localStorage.removeItem('xiaoya_refresh_token');
+                localStorage.removeItem('xiaoya_bound_user_id');
+                setTimeout(promptActivationCode, 1000);
             } else if (errorMessage.includes('激活')) {
                 showNotification('你的凭证已失效或需要激活，请操作...', { type: 'warning', duration: 5000, animation: 'scale' });
                 setTimeout(promptActivationCode, 500);
@@ -4045,7 +4294,8 @@
                     }
                     case 13:
                         try {
-                            const matchObject = (typeof studentAnswer === 'string' ? JSON.parse(studentAnswer) : studentAnswer)[0] || (typeof studentAnswer === 'string' ? JSON.parse(studentAnswer) : studentAnswer);
+                            const parsedMatch = typeof studentAnswer === 'string' ? JSON.parse(studentAnswer) : studentAnswer;
+                            const matchObject = (Array.isArray(parsedMatch) ? parsedMatch[0] : parsedMatch) || {};
                             const optionIdToValueMap = new Map();
                             question.answer_items.forEach(item => {
                                 if (item.is_target_opt) {
@@ -4216,11 +4466,15 @@
         if (!autoContributeEnabled) {
             return false;
         }
-        if (!(await checkAccountConsistency())) {
-            console.log("[后台扫描] 因账号不一致，已中止全量扫描。");
+        if (!localStorage.getItem('xiaoya_access_token')) {
+            console.log('[后台扫描] 尚未激活，跳过后台全量扫描。');
             return false;
         }
         if (getTokenCandidates().length === 0) {
+            return false;
+        }
+        if (!(await checkAccountConsistency())) {
+            console.log("[后台扫描] 账号校验未通过，已中止全量扫描。");
             return false;
         }
         ContributionProgressUI.show('正在准备后台贡献任务...');
@@ -4235,21 +4489,30 @@
                     break;
                 } catch (error) {
                     console.warn(`[后台扫描] 用量预检尝试 ${attempt} 失败:`, error.message);
-                    if (attempt < MAX_RETRIES) {
-                        const delay = 1500 * attempt;
-                        console.log(`[后台扫描] 将在 ${delay / 1000} 秒后重试...`);
-                        await new Promise(resolve => setTimeout(resolve, delay));
-                    } else {
-                        console.error(`[后台扫描] 用量预检在 ${MAX_RETRIES} 次尝试后彻底失败，后台贡献任务中止。`);
+                    const msg = String(error && error.message ? error.message : '');
+                    const isNonRetryable = !!(
+                        error.alreadyNotified ||
+                        error.isBackendError ||
+                        error.isIdentityMismatch ||
+                        isAuthError(error) ||
+                        msg.includes('激活') ||
+                        msg.includes('失效') ||
+                        msg.includes('到期') ||
+                        msg.includes('欺诈')
+                    );
+                    if (isNonRetryable || attempt >= MAX_RETRIES) {
+                        console.error(`[后台扫描] 用量预检失败，后台贡献任务中止。`);
                         throw error;
                     }
+                    const delay = 1500 * attempt;
+                    console.log(`[后台扫描] 将在 ${delay / 1000} 秒后重试...`);
+                    await new Promise(resolve => setTimeout(resolve, delay));
                 }
             }
             const fetchCourses = async (timeFlag) => {
                 const url = `${window.location.origin}/api/jx-iresource/group/student/groups?time_flag=${timeFlag}`;
                 const response = await fetchPlatformApi(url);
-                if (!response.ok) throw new Error(`获取课程列表失败 (flag=${timeFlag})`);
-                const data = await parseJsonResponse(response, '获取课程列表');
+                const data = await parseJsonResponse(response, `获取课程列表(flag=${timeFlag})`);
                 return data.success ? data.data : [];
             };
             const [currentCourses, pastCourses] = await Promise.all([fetchCourses(1), fetchCourses(3)]);
@@ -4299,13 +4562,8 @@
             return;
         }
         try {
-            const token = getToken();
-            if (!token) {
-                showNotification('无法获取token，请确保已登录。', {
-                    type: 'error',
-                    keywords: ['token', '登录'],
-                    animation: 'fadeSlide'
-                });
+            if (getTokenCandidates().length === 0) {
+                showAuthErrorNotification('获取已提交作业', { authReason: 'no_token' });
                 return;
             }
             const currentUrl = window.location.href;
@@ -4566,7 +4824,14 @@
         }
     }
     async function fillAnswers() {
-        const answerData = JSON.parse(localStorage.getItem('answerData'));
+        let answerData = null;
+        try {
+            const rawAnswerData = localStorage.getItem('answerData');
+            answerData = rawAnswerData ? JSON.parse(rawAnswerData) : null;
+        } catch (e) {
+            console.warn('[填写] 解析缓存的 answerData 失败:', e);
+            answerData = null;
+        }
         const recordId = localStorage.getItem('recordId');
         const groupId = localStorage.getItem('groupId');
         const paperId = localStorage.getItem('paperId');
@@ -4578,17 +4843,12 @@
             });
             return;
         }
-        const token = getToken();
-        if (!token) {
-            showNotification('无法获取token。', {
-                type: 'error',
-                keywords: ['token'],
-                animation: 'slideRight'
-            });
+        if (getTokenCandidates().length === 0) {
+            showAuthErrorNotification('填写答案', { authReason: 'no_token' });
             return;
         }
         if (!(await checkAccountConsistency())) {
-            console.warn('[操作中止] 因账号不一致，已取消填写答案。');
+            console.warn('[操作中止] 账号校验未通过，已取消填写答案。');
             return;
         }
         const progress = createProgressBar();
@@ -4637,7 +4897,7 @@
                 const batch = questionsToFill.slice(i, i + batchSize);
                 let localCompletedCount = completedCount;
                 await Promise.all(batch.map(async question => {
-                    const response = await submitAnswer(question, recordId, groupId, paperId, token);
+                    const response = await submitAnswer(question, recordId, groupId, paperId);
                     if (response && !response.ok) {
                         if (isFatalSubmitStatus(response.status)) {
                             const rawText = await response.text();
@@ -4685,7 +4945,7 @@
             }
         }
     }
-    async function submitAnswer(question, recordId, groupId, paperId, token) {
+    async function submitAnswer(question, recordId, groupId, paperId) {
         let answer;
         let extAnswer = '';
         const answerItems = Array.isArray(question.answer_items) ? question.answer_items : [];
@@ -4731,7 +4991,7 @@
             case 9: {
                 if (question.subQuestions && question.subQuestions.length > 0) {
                     for (const subQuestion of question.subQuestions) {
-                        const response = await submitAnswer(subQuestion, recordId, groupId, paperId, token);
+                        const response = await submitAnswer(subQuestion, recordId, groupId, paperId);
                         if (response && !response.ok && isFatalSubmitStatus(response.status)) {
                             const rawText = await response.text();
                             const error = new Error(`提交答案失败 (${response.status}): ${rawText.trim().slice(0, 120) || response.statusText}`);
@@ -5945,11 +6205,10 @@
                 group_id: groupId
             };
             console.log(`调用 Xiaoya Stream API (模式: ${useDeepThink ? '深度思考' : '快速'})`, { body: requestBody });
-            const response = await fetch(`${window.location.origin}/api/jx-oresource/assistant/chat/stream`, {
+            const response = await fetchPlatformApi(`${window.location.origin}/api/jx-oresource/assistant/chat/stream`, {
                 method: "POST",
                 headers: {
                     "accept": "*/*",
-                    "authorization": `Bearer ${bearerToken}`,
                     "content-type": "application/json",
                 },
                 body: JSON.stringify(requestBody),
@@ -7843,7 +8102,9 @@
                     throw new Error(response.error);
                 }
             } catch (error) {
-                showNotification(`举报失败: ${error.message}`, { type: 'error' });
+                if (!error.alreadyNotified) {
+                    showNotification(`举报失败: ${error.message}`, { type: 'error' });
+                }
                 submitButton.disabled = false;
                 submitButton.textContent = '提交反馈';
                 submitButton.style.opacity = '1';
