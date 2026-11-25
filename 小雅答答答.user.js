@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         小雅答答答
 // @license      MIT
-// @version      2.10.17
+// @version      2.10.17.1
 // @description  小雅平台学习助手 📖，智能整理归纳学习资料 📚，辅助完成练习 💪，并提供便捷的查阅和修改功能 📝！
 // @author       Yi
 // @match        https://*.ai-augmented.com/*
@@ -738,11 +738,7 @@
     const SCRIPT_CONFIG = {
         priorityApiBaseUrl: 'https://xiaoya-get-api.zygame1314.site',
         backupApiBaseUrls: [
-            'https://xiaoya-get-api1.zygame1314.site',
-            'https://xiaoya-get-api2.zygame1314.site',
-            'https://xiaoya-get-api3.zygame1314.site',
-            'https://xiaoya-get-api4.zygame1314.site',
-            'https://xiaoya-get-api5.zygame1314.site'
+            'https://xiaoya-get-api.zygame1314-666.top'
         ],
         defaultApiBaseUrl: 'https://xiaoya-get-api.zygame1314-666.top',
         cachedApiBaseUrl: null,
